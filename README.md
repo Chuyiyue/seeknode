@@ -1,123 +1,208 @@
-# Hono Telegram Bot on Cloudflare Workers
+# RSS监控Telegram机器人
 
-一个基于 Hono 和 Grammy 构建的 Telegram Bot，部署在 Cloudflare Workers 上。
+基于Cloudflare Workers + Hono + Grammy的RSS监控系统，支持关键词匹配和Telegram通知。
 
-## 功能
+## 功能特性
 
-- 🤖 响应 `/start`, `/help`, `/info` 命令
-- 💬 自动回复文本消息
-- 📸 识别并回应图片消息
-- ⚡ 基于 Webhook 的实时响应
-- 🌐 部署在 Cloudflare Workers，全球加速
+- 🤖 **Telegram机器人交互**：完整的命令系统，用户友好的界面
+- 📡 **RSS监控**：自动监控NodeSeek RSS源，解析最新帖子
+- 🔍 **关键词匹配**：支持1-3个关键词的组合匹配
+- 📨 **实时通知**：匹配到关键词时自动发送Telegram消息
+- ⏰ **定时任务**：每10分钟自动检查新帖子
+- 🌐 **HTTP触发**：支持手动触发监控检查
+- 💾 **D1数据库**：存储用户信息、订阅记录和推送日志
+- 🔒 **去重处理**：确保同一帖子不会重复推送
 
-## 快速开始
+## 系统架构
 
-### 1. 创建 Telegram Bot
+```
+📁 src/
+├── index.ts          # 主入口文件，路由配置
+├── monitor.ts        # RSS监控核心逻辑
+├── bot-commands.ts   # Telegram机器人命令处理
+├── rss.ts           # RSS解析功能
+└── ...
 
-1. 在 Telegram 中找到 [@BotFather](https://t.me/BotFather)
-2. 发送 `/newbot` 创建新机器人
-3. 按照提示设置机器人名称和用户名
-4. 保存获得的 Bot Token
+📁 migrations/
+└── 0001_initial.sql  # 数据库初始化脚本
 
-### 2. 安装依赖
-
-```bash
-pnpm install
+📁 配置文件
+├── wrangler.jsonc    # Cloudflare Workers配置
+├── package.json      # 项目依赖
+└── tsconfig.json     # TypeScript配置
 ```
 
-### 3. 配置环境变量
+## 数据库设计
 
-编辑 `wrangler.jsonc` 文件，取消注释并配置：
+### users 表
+- 存储Telegram用户信息
+- 管理订阅限制和账户状态
+
+### keywords_sub 表  
+- 存储用户的关键词订阅
+- 支持1-3个关键词的组合匹配
+
+### push_logs 表
+- 记录所有推送日志
+- 去重防止重复通知
+
+## 机器人命令
+
+### 基础命令
+- `/start` - 注册用户并显示欢迎信息
+- `/help` - 显示详细帮助信息
+- `/info` - 查看用户信息和订阅统计
+- `/status` - 查看服务运行状态
+
+### 订阅管理
+- `/list` - 查看当前所有订阅
+- `/add 关键词1 [关键词2] [关键词3]` - 添加关键词订阅
+- `/remove 订阅ID` - 删除指定订阅
+
+### 使用示例
+```
+/add 服务器                    # 监控包含"服务器"的帖子
+/add VPS 优惠                  # 监控同时包含"VPS"和"优惠"的帖子  
+/add 服务器 免费 教程           # 监控同时包含这三个关键词的帖子
+/remove 123                   # 删除ID为123的订阅
+```
+
+## API接口
+
+### RSS相关
+- `GET /rss/posts` - 获取RSS数据
+- `GET /rss/status` - RSS服务状态
+- `GET /rss/test` - RSS连接测试
+
+### 监控相关
+- `GET /monitor/check` - 手动触发监控检查
+- `POST /monitor/check` - 手动触发监控检查  
+- `GET /monitor/status` - 监控服务状态
+
+### 机器人相关
+- `POST /webhook` - Telegram webhook处理
+- `GET /debug` - 调试信息
+- `GET /` - 健康检查
+
+## 部署指南
+
+### 1. 环境准备
+```bash
+# 安装依赖
+pnpm install
+
+# 安装Wrangler CLI
+npm install -g wrangler
+```
+
+### 2. 配置环境变量
+```bash
+# 设置Telegram Bot Token
+wrangler secret put BOT_TOKEN
+
+# 配置其他环境变量
+# 在wrangler.jsonc中配置D1数据库
+```
+
+### 3. 数据库设置
+```bash
+# 创建D1数据库
+wrangler d1 create hono-cf-prod
+
+# 运行数据库迁移
+wrangler d1 migrations apply hono-cf-prod
+```
+
+### 4. 部署应用
+```bash
+# 开发环境
+pnpm run dev
+
+# 生产部署
+pnpm run deploy
+```
+
+### 5. 配置Telegram Webhook
+```bash
+# 设置webhook URL
+curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
+     -H "Content-Type: application/json" \
+     -d '{"url": "https://your-worker-domain.workers.dev/webhook"}'
+```
+
+## 定时任务配置
+
+系统配置为每10分钟自动执行一次RSS监控：
 
 ```jsonc
+// wrangler.jsonc
 {
-  "vars": {
-    "BOT_TOKEN": "your-telegram-bot-token-here"
+  "triggers": {
+    "crons": [
+      "*/10 * * * *"  // 每10分钟执行一次
+    ]
   }
 }
 ```
 
-或者使用 Cloudflare Dashboard 设置环境变量。
+### 自定义频率
+可以根据需要修改cron表达式：
+- `"*/5 * * * *"` - 每5分钟
+- `"0 * * * *"` - 每小时
+- `"0 */2 * * *"` - 每2小时
 
-### 4. 本地开发
+## 监控流程
 
+1. **定时触发**：每10分钟自动执行或手动HTTP触发
+2. **获取RSS**：从NodeSeek获取最新RSS数据
+3. **解析帖子**：提取帖子标题、描述、分类等信息
+4. **用户遍历**：获取所有活跃用户和他们的订阅
+5. **关键词匹配**：检查帖子内容是否匹配用户关键词
+6. **去重检查**：确保同一帖子不会重复推送
+7. **发送通知**：向匹配用户发送Telegram消息
+8. **记录日志**：保存推送记录到数据库
+
+## 开发说明
+
+### 本地开发
 ```bash
-pnpm dev
+# 启动开发服务器
+pnpm run dev
+
+# 使用开发环境配置
+pnpm run dev:config
 ```
 
-### 5. 部署到 Cloudflare Workers
-
+### 数据库操作
 ```bash
-pnpm deploy
+# 创建开发数据库
+pnpm run db:create:dev
+
+# 运行开发环境迁移
+pnpm run db:migrate:dev
 ```
 
-### 6. 设置 Webhook
-
-部署成功后，需要设置 Telegram Webhook：
-
+### 类型生成
 ```bash
-curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-     -H "Content-Type: application/json" \
-     -d '{"url": "https://your-worker-url.your-subdomain.workers.dev/webhook"}'
+# 生成Cloudflare类型
+pnpm run cf-typegen
 ```
 
-将 `<YOUR_BOT_TOKEN>` 替换为你的 Bot Token，`your-worker-url.your-subdomain.workers.dev` 替换为你的 Worker URL。
+## 注意事项
 
-## Bot 命令
+1. **频率限制**：避免过于频繁的RSS请求
+2. **错误处理**：完善的异常捕获和日志记录
+3. **数据清理**：定期清理过期的推送日志
+4. **用户限制**：每个用户最多5个订阅，防止滥用
+5. **安全性**：妥善保管Bot Token和数据库配置
 
-- `/start` - 开始使用机器人
-- `/help` - 显示可用命令
-- `/info` - 显示用户信息
+## 许可证
 
-## 项目结构
+MIT License
 
-```
-hono-cf/
-├── src/
-│   └── index.ts          # Bot 主要逻辑
-├── package.json          # 依赖配置
-├── wrangler.jsonc        # Cloudflare Workers 配置
-└── tsconfig.json         # TypeScript 配置
-```
+## 支持
 
-## 自定义功能
-
-你可以在 `src/index.ts` 中添加更多 Bot 功能：
-
-```typescript
-// 添加新命令
-bot.command('weather', (ctx) => {
-  ctx.reply('今天天气不错！ ☀️')
-})
-
-// 处理特定文本
-bot.hears('你好', (ctx) => {
-  ctx.reply('你好！很高兴见到你！')
-})
-```
-
-## 技术栈
-
-- [Hono](https://hono.dev/) - 轻量级 Web 框架
-- [Grammy](https://grammy.dev/) - Telegram Bot 框架
-- [Cloudflare Workers](https://workers.cloudflare.com/) - 无服务器计算平台
-- TypeScript - 类型安全的 JavaScript
-npm run dev
-```
-
-```txt
-npm run deploy
-```
-
-[For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
-
-```txt
-npm run cf-typegen
-```
-
-Pass the `CloudflareBindings` as generics when instantiation `Hono`:
-
-```ts
-// src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>()
-```
+如有问题，请查看：
+1. Cloudflare Workers文档
+2. Grammy机器人框架文档  
+3. Hono框架文档

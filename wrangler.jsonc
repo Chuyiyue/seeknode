@@ -12,6 +12,12 @@
     "BOT_TOKEN": "example_value",
     "START_COMMAND": "start"
   },
+  // 定时任务配置 - RSS监控
+  "triggers": {
+    "crons": [
+      "*/10 * * * *"  // 每10分钟执行一次RSS监控
+    ]
+  },
   // "kv_namespaces": [
   //   {
   //     "binding": "MY_KV_NAMESPACE",

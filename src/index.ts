@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
-import { Bot, webhookCallback } from 'grammy'
+import { webhookCallback } from 'grammy'
 import rss from './rss'
-
+import monitor, { handleScheduled } from './monitor'
+import { createBotWithCommands } from './bot-commands'
 
 // 创建 Hono 应用
 const app = new Hono<{
@@ -11,51 +12,25 @@ const app = new Hono<{
   }
 }>()
 
-// 创建 Bot 实例的函数
-function createBot(token: string) {
-  const bot = new Bot(token)
-
-  // 处理 /start 命令
-  bot.command('start', (ctx) => {
-    return ctx.reply('欢迎使用我的机器人！🤖\n\n发送任何消息，我会回复你。')
-  })
-
-  // 处理 /help 命令
-  bot.command('help', (ctx) => {
-    return ctx.reply('可用命令：\n/start - 开始使用\n/help - 显示帮助\n/info - 显示信息')
-  })
-
-  // 处理 /info 命令
-  bot.command('info', (ctx) => {
-    const user = ctx.from
-    const chatId = ctx.chat.id
-    return ctx.reply(`用户信息：\n用户ID: ${user?.id}\n用户名: ${user?.username || '未设置'}\n聊天ID: ${chatId}`)
-  })
-
-  // 处理普通文本消息
-  bot.on('message:text', (ctx) => {
-    const userMessage = ctx.message.text
-    // 跳过命令消息，避免重复处理
-    if (userMessage.startsWith('/')) {
-      return
-    }
-    return ctx.reply(`你说：${userMessage}\n\n我收到了你的消息！ 👍`)
-  })
-
-  // 处理图片消息
-  bot.on('message:photo', (ctx) => {
-    return ctx.reply('我收到了一张图片！📸')
-  })
-
-  return bot
-}
-
 // 挂载RSS路由
 app.route('/rss', rss)
 
+// 挂载监控路由
+app.route('/monitor', monitor)
+
 // 健康检查端点
 app.get('/', (c) => {
-  return c.json({ status: 'ok', message: 'Telegram Bot is running!' })
+  return c.json({ 
+    status: 'ok', 
+    message: 'RSS监控机器人正在运行！',
+    services: [
+      'Telegram Bot',
+      'RSS监控',
+      '关键词匹配',
+      '定时任务'
+    ],
+    timestamp: new Date().toISOString()
+  })
 })
 
 // 调试端点
@@ -64,6 +39,7 @@ app.get('/debug', (c) => {
   return c.json({
     bot_token_configured: !!botToken,
     bot_token_prefix: botToken ? botToken.substring(0, 10) + '...' : 'not set',
+    database_configured: !!c.env.DB,
     timestamp: new Date().toISOString()
   })
 })
@@ -78,8 +54,13 @@ app.post('/webhook', async (c) => {
       return c.json({ error: 'BOT_TOKEN not configured' }, 500)
     }
 
-    // 创建 Bot 实例
-    const bot = createBot(botToken)
+    if (!c.env.DB) {
+      console.error('Database not configured')
+      return c.json({ error: 'Database not configured' }, 500)
+    }
+
+    // 创建带有完整命令的 Bot 实例
+    const bot = createBotWithCommands(botToken, c.env.DB)
 
     // 使用 webhookCallback 处理请求
     const callback = webhookCallback(bot, 'hono')
@@ -91,4 +72,15 @@ app.post('/webhook', async (c) => {
   }
 })
 
-export default app
+// 导出默认的 Hono 应用
+export default {
+  fetch: app.fetch,
+  // 定时任务处理器
+  scheduled: async (event: ScheduledEvent, env: any, ctx: ExecutionContext) => {
+    console.log('定时任务触发:', event.cron)
+    ctx.waitUntil(handleScheduled(env))
+  }
+}
+
+// 导出定时任务处理函数供 Cloudflare Worker 使用
+export { handleScheduled }

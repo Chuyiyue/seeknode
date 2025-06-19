@@ -1,5 +1,5 @@
--- tg_users 表
-CREATE TABLE IF NOT EXISTS tg_users (
+-- users 表
+CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   chat_id INTEGER NOT NULL UNIQUE,
   username TEXT DEFAULT NULL,
@@ -11,11 +11,11 @@ CREATE TABLE IF NOT EXISTS tg_users (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 为 tg_users 创建索引
-CREATE INDEX IF NOT EXISTS idx_tg_users_chat_id ON tg_users(chat_id);
+-- 为 users 创建索引
+CREATE INDEX IF NOT EXISTS idx_users_chat_id ON users(chat_id);
 
--- tg_keywords_sub 表
-CREATE TABLE IF NOT EXISTS tg_keywords_sub (
+-- keywords_sub 表
+CREATE TABLE IF NOT EXISTS keywords_sub (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   keywords_count INTEGER DEFAULT NULL,
@@ -27,11 +27,11 @@ CREATE TABLE IF NOT EXISTS tg_keywords_sub (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 为 tg_keywords_sub 创建索引
-CREATE INDEX IF NOT EXISTS idx_tg_keywords_sub_user_id ON tg_keywords_sub(user_id);
+-- 为 keywords_sub 创建索引
+CREATE INDEX IF NOT EXISTS idx_keywords_sub_user_id ON keywords_sub(user_id);
 
--- tg_push_logs 表
-CREATE TABLE IF NOT EXISTS tg_push_logs (
+-- push_logs 表
+CREATE TABLE IF NOT EXISTS push_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL,
   chat_id INTEGER NOT NULL,
@@ -42,8 +42,8 @@ CREATE TABLE IF NOT EXISTS tg_push_logs (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 为 tg_push_logs 创建索引和唯一约束
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tg_push_logs_user_chat ON tg_push_logs(chat_id, post_id);
-CREATE INDEX IF NOT EXISTS idx_tg_push_logs_user_id ON tg_push_logs(user_id);
-CREATE INDEX IF NOT EXISTS idx_tg_push_logs_post_id ON tg_push_logs(post_id);
-CREATE INDEX IF NOT EXISTS idx_tg_push_logs_push_status ON tg_push_logs(push_status);
+-- 为 push_logs 创建索引和唯一约束
+CREATE UNIQUE INDEX IF NOT EXISTS idx_push_logs_user_chat ON push_logs(chat_id, post_id);
+CREATE INDEX IF NOT EXISTS idx_push_logs_user_id ON push_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_push_logs_post_id ON push_logs(post_id);
+CREATE INDEX IF NOT EXISTS idx_push_logs_push_status ON push_logs(push_status);
