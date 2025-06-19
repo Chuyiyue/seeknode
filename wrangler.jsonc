@@ -9,13 +9,13 @@
   // 环境变量在生产环境中通过 wrangler secret 设置
   // 本地开发使用 .dev.vars 文件
   "vars": {
-    "BOT_TOKEN": "example_value",
+    "BOT_TOKEN": "YOUR_ACTUAL_BOT_TOKEN_HERE",
     "START_COMMAND": "start"
   },
   // 定时任务配置 - RSS监控
   "triggers": {
     "crons": [
-      "*/10 * * * *"  // 每10分钟执行一次RSS监控
+      "*/1 * * * *"  // 每1分钟执行一次RSS监控
     ]
   },
   // "kv_namespaces": [
@@ -35,8 +35,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "hono-cf-prod",
-      "database_id": "your-production-database-id-here"
+      "database_name": "seeknode",
+      "database_id": "98332be7-e9be-4f98-b18c-1a7a7f6a0e8e"
     }
   ],
   // "ai": {
