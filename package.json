@@ -1,0 +1,25 @@
+{
+  "name": "hono-cf",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:config": "wrangler dev --config wrangler.dev.jsonc",
+    "deploy": "wrangler deploy --minify",
+    "deploy:staging": "wrangler deploy --config wrangler.staging.jsonc --minify",
+    "deploy:prod": "wrangler deploy --config wrangler.prod.jsonc --minify",
+    "cf-typegen": "wrangler types --env-interface CloudflareBindings",
+    "db:create:dev": "wrangler d1 create hono-cf-dev",
+    "db:create:staging": "wrangler d1 create hono-cf-staging", 
+    "db:create:prod": "wrangler d1 create hono-cf-prod",
+    "db:migrate:dev": "wrangler d1 migrations apply hono-cf-dev --config wrangler.dev.jsonc",
+    "db:migrate:staging": "wrangler d1 migrations apply hono-cf-staging --config wrangler.staging.jsonc",
+    "db:migrate:prod": "wrangler d1 migrations apply hono-cf-prod --config wrangler.prod.jsonc"
+  },
+  "dependencies": {
+    "hono": "^4.7.11",
+    "grammy": "^1.21.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.4.0",
+    "@types/node": "^22.0.0"
+  }
+}
