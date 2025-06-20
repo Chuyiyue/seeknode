@@ -211,31 +211,6 @@ async function markPostAsPushed(db: D1Database, postId: number): Promise<void> {
   }
 }
 
-// 检查是否已经发送过通知
-async function isAlreadySent(db: D1Database, chatId: number, postId: number): Promise<boolean> {
-  try {
-    const result = await db.prepare('SELECT id FROM push_logs WHERE chat_id = ? AND post_id = ?')
-      .bind(chatId, postId)
-      .first()
-    return !!result
-  } catch (error) {
-    console.error('检查发送记录失败:', error)
-    return false
-  }
-}
-
-// 记录推送日志
-async function logPush(db: D1Database, userId: number, chatId: number, postId: number, subId: number, status: number, errorMessage?: string): Promise<void> {
-  try {
-    await db.prepare(`
-      INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_status, error_message)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(userId, chatId, postId, subId, status, errorMessage || null).run()
-  } catch (error) {
-    console.error('记录推送日志失败:', error)
-  }
-}
-
 // 关键词匹配函数
 function matchKeywords(post: DBPost, keywords: KeywordSub): boolean {
   const searchText = `${post.title} ${post.content} ${post.category} ${post.creator}`.toLowerCase()
@@ -291,123 +266,194 @@ async function sendTelegramMessage(botToken: string, chatId: number, post: DBPos
   }
 }
 
+// 步骤2：为帖子匹配关键词并创建push_logs记录
+async function createPushLogs(env: Env, posts: DBPost[]): Promise<{ totalLogs: number; createdLogs: number }> {
+  let totalLogs = 0
+  let createdLogs = 0
+  
+  try {
+    // 获取所有活跃用户
+    const users = await getActiveUsers(env.DB)
+    
+    for (const post of posts) {
+      let hasMatches = false
+      
+      for (const user of users) {
+        // 获取用户的关键词订阅
+        const keywordSubs = await getUserKeywords(env.DB, user.id)
+        
+        for (const keywords of keywordSubs) {
+          if (matchKeywords(post, keywords)) {
+            totalLogs++
+            
+            // 检查是否已经创建过push_logs记录
+            const existing = await env.DB.prepare(
+              'SELECT id FROM push_logs WHERE user_id = ? AND post_id = ? AND sub_id = ?'
+            ).bind(user.id, post.post_id, keywords.id).first()
+            
+            if (!existing) {
+              // 创建新的push_logs记录，初始状态为待发送(0)
+              await env.DB.prepare(`
+                INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_status, error_message)
+                VALUES (?, ?, ?, ?, 0, NULL)
+              `).bind(user.id, user.chat_id, post.post_id, keywords.id).run()
+              
+              createdLogs++
+              hasMatches = true
+              console.log(`为用户 ${user.chat_id} 创建帖子 ${post.post_id} 的推送记录`)
+            }
+            
+            // 每个用户对每个帖子只创建一个push_logs记录，即使匹配多个关键词
+            break
+          }
+        }
+      }
+      
+      // 如果该帖子有匹配或已经检查完毕，标记为已处理
+      await markPostAsPushed(env.DB, post.post_id)
+      console.log(`标记帖子 ${post.post_id} 为已匹配完成`)
+    }
+    
+  } catch (error) {
+    console.error('创建推送记录失败:', error)
+  }
+  
+  return { totalLogs, createdLogs }
+}
+
+// 步骤3：发送待发送的push_logs记录
+async function processPushLogs(env: Env): Promise<{ totalAttempts: number; successful: number; failed: number }> {
+  let totalAttempts = 0
+  let successful = 0
+  let failed = 0
+  
+  try {
+    // 获取待发送的push_logs记录（状态为0且重试次数未超限）
+    const pendingLogs = await env.DB.prepare(`
+      SELECT pl.*, p.title, p.content, p.category, p.creator, p.post_id as post_id,
+             ks.keyword1, ks.keyword2, ks.keyword3
+      FROM push_logs pl
+      JOIN posts p ON pl.post_id = p.post_id
+      JOIN keywords_sub ks ON pl.sub_id = ks.id
+      WHERE pl.push_status = 0 
+      AND (pl.retry_count IS NULL OR pl.retry_count < 3)
+      ORDER BY pl.created_at ASC
+      LIMIT 100
+    `).all()
+    
+    for (const logRecord of pendingLogs.results) {
+      const log = logRecord as any // 临时类型断言
+      totalAttempts++
+      
+      try {
+        // 构建匹配的关键词列表
+        const matchedKeywords = [
+          log.keyword1,
+          log.keyword2, 
+          log.keyword3
+        ].filter(Boolean) as string[]
+        
+        // 构建帖子对象
+        const post: DBPost = {
+          id: Number(log.id),
+          post_id: Number(log.post_id),
+          title: String(log.title),
+          content: String(log.content),
+          pub_date: '',
+          category: String(log.category),
+          creator: String(log.creator),
+          is_push: 1,
+          created_at: ''
+        }
+        
+        // 发送Telegram消息
+        const sent = await sendTelegramMessage(env.BOT_TOKEN, Number(log.chat_id), post, matchedKeywords)
+        
+        if (sent) {
+          // 发送成功，更新状态
+          await env.DB.prepare(`
+            UPDATE push_logs 
+            SET push_status = 1, sent_at = datetime('now'), error_message = NULL
+            WHERE id = ?
+          `).bind(log.id).run()
+          
+          successful++
+          console.log(`成功发送推送到用户 ${log.chat_id}，帖子 ${log.post_id}`)
+        } else {
+          // 发送失败，增加重试次数
+          const retryCount = Number(log.retry_count || 0) + 1
+          await env.DB.prepare(`
+            UPDATE push_logs 
+            SET retry_count = ?, last_retry_at = datetime('now'), error_message = ?
+            WHERE id = ?
+          `).bind(retryCount, '发送失败', log.id).run()
+          
+          failed++
+          console.log(`发送失败，用户 ${log.chat_id}，帖子 ${log.post_id}，重试次数: ${retryCount}`)
+        }
+        
+      } catch (error) {
+        // 处理单个发送任务时的错误
+        const retryCount = Number(log.retry_count || 0) + 1
+        await env.DB.prepare(`
+          UPDATE push_logs 
+          SET retry_count = ?, last_retry_at = datetime('now'), error_message = ?
+          WHERE id = ?
+        `).bind(retryCount, String(error), log.id).run()
+        
+        failed++
+        console.error(`处理push_logs记录 ${log.id} 时出错:`, error)
+      }
+    }
+    
+  } catch (error) {
+    console.error('处理推送记录失败:', error)
+  }
+  
+  return { totalAttempts, successful, failed }
+}
+
 // 主监控函数
 async function monitorRSS(env: Env): Promise<{ success: boolean; message: string; stats: any }> {
   try {
     console.log('开始RSS监控...')
     
-    // 第一步：获取RSS数据并保存到数据库
+    // 步骤1：获取RSS数据并保存到数据库
     const rssPosts = await fetchRSSData()
     if (rssPosts.length === 0) {
       return { success: false, message: '未获取到RSS数据', stats: {} }
     }
     
-    // 保存RSS数据到数据库
     const savedCount = await savePostsToDatabase(env.DB, rssPosts)
     console.log(`保存了 ${savedCount} 个新帖子到数据库`)
     
-    // 第二步：从数据库获取待推送的帖子
-    const posts = await getUnpushedPosts(env.DB)
-    if (posts.length === 0) {
-      return { 
-        success: true, 
-        message: '没有待推送的帖子', 
-        stats: { 
-          rssPostsCount: rssPosts.length,
-          savedNewPosts: savedCount,
-          postsToCheck: 0
-        } 
-      }
+    // 步骤2：处理未匹配关键词的帖子，创建push_logs记录
+    const unpushedPosts = await getUnpushedPosts(env.DB)
+    let keywordMatchStats = { totalLogs: 0, createdLogs: 0 }
+    
+    if (unpushedPosts.length > 0) {
+      keywordMatchStats = await createPushLogs(env, unpushedPosts)
+      console.log(`为 ${unpushedPosts.length} 个帖子匹配关键词，创建了 ${keywordMatchStats.createdLogs} 个推送记录`)
     }
     
-    // 获取所有活跃用户
-    const users = await getActiveUsers(env.DB)
-    if (users.length === 0) {
-      return { 
-        success: true, 
-        message: '没有活跃用户', 
-        stats: { 
-          rssPostsCount: rssPosts.length,
-          savedNewPosts: savedCount,
-          postsToCheck: posts.length 
-        } 
-      }
-    }
-    
-    let totalNotifications = 0
-    let successfulNotifications = 0
-    let failedNotifications = 0
-    const pushedPostIds = new Set<number>()
-    
-    // 遍历每个用户
-    for (const user of users) {
-      try {
-        // 获取用户的关键词订阅
-        const keywordSubs = await getUserKeywords(env.DB, user.id)
-        
-        if (keywordSubs.length === 0) {
-          continue
-        }
-        
-        // 遍历每个帖子
-        for (const post of posts) {
-          // 检查是否已经发送过通知
-          if (await isAlreadySent(env.DB, user.chat_id, post.post_id)) {
-            continue
-          }
-          
-          // 检查关键词匹配
-          for (const keywords of keywordSubs) {
-            if (matchKeywords(post, keywords)) {
-              totalNotifications++
-              
-              // 发送Telegram消息
-              const matchedKeywordsList = [
-                keywords.keyword1,
-                keywords.keyword2,
-                keywords.keyword3
-              ].filter(Boolean) as string[]
-              
-              const sent = await sendTelegramMessage(env.BOT_TOKEN, user.chat_id, post, matchedKeywordsList)
-              
-              if (sent) {
-                successfulNotifications++
-                await logPush(env.DB, user.id, user.chat_id, post.post_id, keywords.id, 1)
-                pushedPostIds.add(post.post_id)
-              } else {
-                failedNotifications++
-                await logPush(env.DB, user.id, user.chat_id, post.post_id, keywords.id, 0, '发送失败')
-              }
-              
-              // 每个帖子对每个用户只发送一次，即使匹配多个关键词
-              break
-            }
-          }
-        }
-      } catch (error) {
-        console.error(`处理用户 ${user.chat_id} 时出错:`, error)
-      }
-    }
-    
-    // 标记已推送的帖子
-    for (const postId of pushedPostIds) {
-      await markPostAsPushed(env.DB, postId)
-    }
+    // 步骤3：处理待发送的push_logs记录
+    const pushStats = await processPushLogs(env)
+    console.log(`处理了 ${pushStats.totalAttempts} 个推送任务，成功 ${pushStats.successful} 个，失败 ${pushStats.failed} 个`)
     
     const stats = {
       rssPostsCount: rssPosts.length,
       savedNewPosts: savedCount,
-      postsToCheck: posts.length,
-      users: users.length,
-      totalNotifications,
-      successfulNotifications,
-      failedNotifications,
-      pushedPosts: pushedPostIds.size
+      unpushedPosts: unpushedPosts.length,
+      keywordMatches: keywordMatchStats.totalLogs,
+      createdPushLogs: keywordMatchStats.createdLogs,
+      pushAttempts: pushStats.totalAttempts,
+      successfulPushes: pushStats.successful,
+      failedPushes: pushStats.failed
     }
     
     return {
       success: true,
-      message: `监控完成，保存了 ${savedCount} 个新帖子，发送了 ${successfulNotifications} 条通知`,
+      message: `监控完成：保存 ${savedCount} 个新帖子，创建 ${keywordMatchStats.createdLogs} 个推送记录，成功发送 ${pushStats.successful} 条通知`,
       stats
     }
     
