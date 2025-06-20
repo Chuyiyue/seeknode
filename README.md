@@ -1,8 +1,23 @@
-# RSS监控Telegram机器人
+# Nodeseek 关键词监控 Telegram 机器人
 
 基于Cloudflare Workers + Hono + Grammy的RSS监控系统，支持关键词匹配和Telegram通知。
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ljnchn/seeknode)
+
+## 使用准备
+
+- cloudflare 账号
+- github 账号
+- telegram bot token
+
+## 使用步骤
+
+1. 在 telegram 中搜索 @BotFather 并创建一个 bot，复制 bot token 备用
+2. 点击上方按钮部署到 Cloudflare
+3. 按照提示进行配置部署
+4. 在设置 -> 变量和机密 -> 添加变量名称 `BOT_TOKEN` 为上一步复制的 bot token
+5. 访问 worker 域名 + /setup 查看状态
+6. 在 telegram 中发送 /start 注册用户
 
 ## 功能特性
 
