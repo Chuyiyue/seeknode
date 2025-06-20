@@ -2,6 +2,8 @@
 
 基于Cloudflare Workers + Hono + Grammy的RSS监控系统，支持关键词匹配和Telegram通知。
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/ljnchn/seeknode)
+
 ## 功能特性
 
 - 🤖 **Telegram机器人交互**：完整的命令系统，用户友好的界面
