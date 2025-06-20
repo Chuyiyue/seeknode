@@ -1,6 +1,17 @@
 import { Hono } from 'hono'
 import { Bot } from 'grammy'
 
+// CF Worker 类型定义
+interface ScheduledEvent {
+  cron: string
+  scheduledTime: number
+}
+
+interface ExecutionContext {
+  waitUntil(promise: Promise<any>): void
+  passThroughOnException(): void
+}
+
 // 定义环境变量类型
 interface Env {
   BOT_TOKEN: string
@@ -244,7 +255,7 @@ function matchKeywords(post: DBPost, keywords: KeywordSub): boolean {
 }
 
 // 发送Telegram消息
-async function sendTelegramMessage(botToken: string, chatId: number, post: DBPost, matchedKeywords: string[]): Promise<boolean> {
+async function sendTelegramMessage(botToken: string, chatId: number, post: DBPost, matchedKeywords: string[]): Promise<{ success: boolean; error?: string; userBlocked?: boolean }> {
   try {
     const bot = new Bot(botToken)
     
@@ -259,91 +270,118 @@ async function sendTelegramMessage(botToken: string, chatId: number, post: DBPos
       disable_web_page_preview: false
     } as any)
     
-    return true
-  } catch (error) {
+    return { success: true }
+  } catch (error: any) {
     console.error('发送Telegram消息失败:', error)
-    return false
+    
+    // 检查是否是用户屏蔽机器人的错误
+    const errorMessage = error?.message || error?.description || String(error)
+    
+    // Telegram API常见的用户屏蔽错误码和消息
+    const blockedErrors = [
+      'Forbidden: bot was blocked by the user',
+      'Forbidden: user is deactivated',
+      'Forbidden: bot was kicked from the group chat',
+      'Forbidden: bot was kicked from the supergroup chat',
+      'Bad Request: chat not found'
+    ]
+    
+    const userBlocked = blockedErrors.some(blockedError => 
+      errorMessage.toLowerCase().includes(blockedError.toLowerCase())
+    )
+    
+    if (userBlocked) {
+      console.log(`🚫 用户 ${chatId} 已屏蔽机器人或聊天不存在`)
+    }
+    
+    return { 
+      success: false, 
+      error: errorMessage,
+      userBlocked
+    }
   }
 }
 
-// 步骤2：为帖子匹配关键词并创建push_logs记录
-async function createPushLogs(env: Env, posts: DBPost[]): Promise<{ totalLogs: number; createdLogs: number }> {
-  let totalLogs = 0
-  let createdLogs = 0
-  
+// RSS监控任务：只负责抓取RSS并创建推送记录
+async function rssMonitorTask(env: Env): Promise<{ success: boolean; message: string; stats: any }> {
   try {
-    // 获取所有活跃用户
-    const users = await getActiveUsers(env.DB)
+    console.log('开始RSS监控任务...')
     
-    for (const post of posts) {
-      let hasMatches = false
-      
-      for (const user of users) {
-        // 获取用户的关键词订阅
-        const keywordSubs = await getUserKeywords(env.DB, user.id)
-        
-        for (const keywords of keywordSubs) {
-          if (matchKeywords(post, keywords)) {
-            totalLogs++
-            
-            // 检查是否已经创建过push_logs记录
-            const existing = await env.DB.prepare(
-              'SELECT id FROM push_logs WHERE user_id = ? AND post_id = ? AND sub_id = ?'
-            ).bind(user.id, post.post_id, keywords.id).first()
-            
-            if (!existing) {
-              // 创建新的push_logs记录，初始状态为待发送(0)
-              await env.DB.prepare(`
-                INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_status, error_message)
-                VALUES (?, ?, ?, ?, 0, NULL)
-              `).bind(user.id, user.chat_id, post.post_id, keywords.id).run()
-              
-              createdLogs++
-              hasMatches = true
-              console.log(`为用户 ${user.chat_id} 创建帖子 ${post.post_id} 的推送记录`)
-            }
-            
-            // 每个用户对每个帖子只创建一个push_logs记录，即使匹配多个关键词
-            break
-          }
-        }
-      }
-      
-      // 如果该帖子有匹配或已经检查完毕，标记为已处理
-      await markPostAsPushed(env.DB, post.post_id)
-      console.log(`标记帖子 ${post.post_id} 为已匹配完成`)
+    // 步骤1：获取RSS数据并保存到数据库
+    const rssPosts = await fetchRSSData()
+    if (rssPosts.length === 0) {
+      return { success: true, message: '未获取到新的RSS数据', stats: { rssPostsCount: 0 } }
+    }
+    
+    const savedCount = await savePostsToDatabase(env.DB, rssPosts)
+    console.log(`保存了 ${savedCount} 个新帖子到数据库`)
+    
+    // 步骤2：处理未匹配关键词的帖子，创建push_logs记录
+    const unpushedPosts = await getUnpushedPosts(env.DB)
+    let keywordMatchStats = { totalLogs: 0, createdLogs: 0 }
+    
+    if (unpushedPosts.length > 0) {
+      keywordMatchStats = await createPushLogs(env, unpushedPosts)
+      console.log(`为 ${unpushedPosts.length} 个帖子匹配关键词，创建了 ${keywordMatchStats.createdLogs} 个推送记录`)
+    }
+    
+    const stats = {
+      rssPostsCount: rssPosts.length,
+      savedNewPosts: savedCount,
+      unpushedPosts: unpushedPosts.length,
+      keywordMatches: keywordMatchStats.totalLogs,
+      createdPushLogs: keywordMatchStats.createdLogs
+    }
+    
+    return {
+      success: true,
+      message: `RSS监控完成：保存 ${savedCount} 个新帖子，创建 ${keywordMatchStats.createdLogs} 个推送记录`,
+      stats
     }
     
   } catch (error) {
-    console.error('创建推送记录失败:', error)
+    console.error('RSS监控任务失败:', error)
+    return {
+      success: false,
+      message: `RSS监控任务失败: ${error}`,
+      stats: {}
+    }
   }
-  
-  return { totalLogs, createdLogs }
 }
 
-// 步骤3：发送待发送的push_logs记录
-async function processPushLogs(env: Env): Promise<{ totalAttempts: number; successful: number; failed: number }> {
-  let totalAttempts = 0
-  let successful = 0
-  let failed = 0
-  
+// 推送任务：只负责发送待推送的记录
+async function pushTask(env: Env): Promise<{ success: boolean; message: string; stats: any }> {
   try {
-    // 获取待发送的push_logs记录（状态为0且重试次数未超限）
+    console.log('开始推送任务...')
+    
+    // 获取待发送的推送记录（简化重试逻辑）
     const pendingLogs = await env.DB.prepare(`
-      SELECT pl.*, p.title, p.content, p.category, p.creator, p.post_id as post_id,
-             ks.keyword1, ks.keyword2, ks.keyword3
+      SELECT pl.*, p.title, p.content, p.category, p.creator, p.post_id,
+             ks.keyword1, ks.keyword2, ks.keyword3,
+             u.chat_id
       FROM push_logs pl
       JOIN posts p ON pl.post_id = p.post_id
       JOIN keywords_sub ks ON pl.sub_id = ks.id
+      JOIN users u ON pl.user_id = u.id
       WHERE pl.push_status = 0 
-      AND (pl.retry_count IS NULL OR pl.retry_count < 3)
+      AND (pl.created_at > datetime('now', '-1 day'))  -- 只处理24小时内的记录
       ORDER BY pl.created_at ASC
-      LIMIT 100
+      LIMIT 50
     `).all()
     
+    if (pendingLogs.results.length === 0) {
+      return { 
+        success: true, 
+        message: '没有待推送的记录', 
+        stats: { pushAttempts: 0, successfulPushes: 0, failedPushes: 0 } 
+      }
+    }
+    
+    let successful = 0
+    let failed = 0
+    
     for (const logRecord of pendingLogs.results) {
-      const log = logRecord as any // 临时类型断言
-      totalAttempts++
+      const log = logRecord as any
       
       try {
         // 构建匹配的关键词列表
@@ -369,113 +407,159 @@ async function processPushLogs(env: Env): Promise<{ totalAttempts: number; succe
         // 发送Telegram消息
         const sent = await sendTelegramMessage(env.BOT_TOKEN, Number(log.chat_id), post, matchedKeywords)
         
-        if (sent) {
+        if (sent.success) {
           // 发送成功，更新状态
           await env.DB.prepare(`
             UPDATE push_logs 
-            SET push_status = 1, sent_at = datetime('now'), error_message = NULL
+            SET push_status = 1, error_message = NULL
             WHERE id = ?
           `).bind(log.id).run()
           
           successful++
-          console.log(`成功发送推送到用户 ${log.chat_id}，帖子 ${log.post_id}`)
+          console.log(`✅ 成功发送推送到用户 ${log.chat_id}，帖子 ${log.post_id}`)
         } else {
-          // 发送失败，增加重试次数
-          const retryCount = Number(log.retry_count || 0) + 1
+          // 发送失败，更新错误信息
           await env.DB.prepare(`
             UPDATE push_logs 
-            SET retry_count = ?, last_retry_at = datetime('now'), error_message = ?
+            SET error_message = ?
             WHERE id = ?
-          `).bind(retryCount, '发送失败', log.id).run()
+          `).bind(sent.error, log.id).run()
           
           failed++
-          console.log(`发送失败，用户 ${log.chat_id}，帖子 ${log.post_id}，重试次数: ${retryCount}`)
+          console.log(`❌ 发送失败，用户 ${log.chat_id}，帖子 ${log.post_id}`)
+          
+          if (sent.userBlocked) {
+            await deactivateUser(env.DB, Number(log.chat_id))
+          }
         }
         
       } catch (error) {
         // 处理单个发送任务时的错误
-        const retryCount = Number(log.retry_count || 0) + 1
         await env.DB.prepare(`
           UPDATE push_logs 
-          SET retry_count = ?, last_retry_at = datetime('now'), error_message = ?
+          SET error_message = ?
           WHERE id = ?
-        `).bind(retryCount, String(error), log.id).run()
+        `).bind(String(error), log.id).run()
         
         failed++
-        console.error(`处理push_logs记录 ${log.id} 时出错:`, error)
+        console.error(`❌ 处理推送记录 ${log.id} 时出错:`, error)
       }
     }
     
-  } catch (error) {
-    console.error('处理推送记录失败:', error)
-  }
-  
-  return { totalAttempts, successful, failed }
-}
-
-// 主监控函数
-async function monitorRSS(env: Env): Promise<{ success: boolean; message: string; stats: any }> {
-  try {
-    console.log('开始RSS监控...')
-    
-    // 步骤1：获取RSS数据并保存到数据库
-    const rssPosts = await fetchRSSData()
-    if (rssPosts.length === 0) {
-      return { success: false, message: '未获取到RSS数据', stats: {} }
-    }
-    
-    const savedCount = await savePostsToDatabase(env.DB, rssPosts)
-    console.log(`保存了 ${savedCount} 个新帖子到数据库`)
-    
-    // 步骤2：处理未匹配关键词的帖子，创建push_logs记录
-    const unpushedPosts = await getUnpushedPosts(env.DB)
-    let keywordMatchStats = { totalLogs: 0, createdLogs: 0 }
-    
-    if (unpushedPosts.length > 0) {
-      keywordMatchStats = await createPushLogs(env, unpushedPosts)
-      console.log(`为 ${unpushedPosts.length} 个帖子匹配关键词，创建了 ${keywordMatchStats.createdLogs} 个推送记录`)
-    }
-    
-    // 步骤3：处理待发送的push_logs记录
-    const pushStats = await processPushLogs(env)
-    console.log(`处理了 ${pushStats.totalAttempts} 个推送任务，成功 ${pushStats.successful} 个，失败 ${pushStats.failed} 个`)
+    // 清理超过24小时的失败记录
+    await env.DB.prepare(`
+      DELETE FROM push_logs 
+      WHERE push_status = 0 
+      AND created_at < datetime('now', '-1 day')
+    `).run()
     
     const stats = {
-      rssPostsCount: rssPosts.length,
-      savedNewPosts: savedCount,
-      unpushedPosts: unpushedPosts.length,
-      keywordMatches: keywordMatchStats.totalLogs,
-      createdPushLogs: keywordMatchStats.createdLogs,
-      pushAttempts: pushStats.totalAttempts,
-      successfulPushes: pushStats.successful,
-      failedPushes: pushStats.failed
+      pushAttempts: pendingLogs.results.length,
+      successfulPushes: successful,
+      failedPushes: failed
     }
     
     return {
       success: true,
-      message: `监控完成：保存 ${savedCount} 个新帖子，创建 ${keywordMatchStats.createdLogs} 个推送记录，成功发送 ${pushStats.successful} 条通知`,
+      message: `推送任务完成：尝试发送 ${pendingLogs.results.length} 条，成功 ${successful} 条，失败 ${failed} 条`,
       stats
     }
     
   } catch (error) {
-    console.error('RSS监控失败:', error)
+    console.error('推送任务失败:', error)
     return {
       success: false,
-      message: `监控失败: ${error}`,
+      message: `推送任务失败: ${error}`,
       stats: {}
     }
   }
 }
 
+// 步骤2：为帖子匹配关键词并创建push_logs记录
+async function createPushLogs(env: Env, posts: DBPost[]): Promise<{ totalLogs: number; createdLogs: number }> {
+  let totalLogs = 0
+  let createdLogs = 0
+  
+  try {
+    // 获取所有活跃用户
+    const users = await getActiveUsers(env.DB)
+    
+    for (const post of posts) {
+      for (const user of users) {
+        // 获取用户的关键词订阅
+        const keywordSubs = await getUserKeywords(env.DB, user.id)
+        
+        for (const keywords of keywordSubs) {
+          if (matchKeywords(post, keywords)) {
+            totalLogs++
+            
+            // 检查是否已经创建过push_logs记录
+            const existing = await env.DB.prepare(
+              'SELECT id FROM push_logs WHERE user_id = ? AND post_id = ? AND sub_id = ?'
+            ).bind(user.id, post.post_id, keywords.id).first()
+            
+            if (!existing) {
+              // 创建新的push_logs记录，初始状态为待发送(0)
+              await env.DB.prepare(`
+                INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_status, error_message)
+                VALUES (?, ?, ?, ?, 0, NULL)
+              `).bind(user.id, user.chat_id, post.post_id, keywords.id).run()
+              
+              createdLogs++
+              console.log(`📝 为用户 ${user.chat_id} 创建帖子 ${post.post_id} 的推送记录`)
+            }
+            
+            // 每个用户对每个帖子只创建一个push_logs记录，即使匹配多个关键词
+            break
+          }
+        }
+      }
+      
+      // 标记帖子为已匹配完成
+      await markPostAsPushed(env.DB, post.post_id)
+      console.log(`✅ 标记帖子 ${post.post_id} 为已匹配完成`)
+    }
+    
+  } catch (error) {
+    console.error('创建推送记录失败:', error)
+  }
+  
+  return { totalLogs, createdLogs }
+}
+
+// 更新用户状态为非活跃
+async function deactivateUser(db: D1Database, chatId: number): Promise<void> {
+  try {
+    await db.prepare('UPDATE users SET is_active = 0 WHERE chat_id = ?')
+      .bind(chatId)
+      .run()
+    console.log(`🔒 已将用户 ${chatId} 标记为非活跃状态`)
+  } catch (error) {
+    console.error('更新用户状态失败:', error)
+  }
+}
+
 // HTTP触发监控
 monitor.post('/check', async (c) => {
-  const result = await monitorRSS(c.env)
+  const result = await rssMonitorTask(c.env)
   return c.json(result)
 })
 
 // 手动触发监控（GET请求）
 monitor.get('/check', async (c) => {
-  const result = await monitorRSS(c.env)
+  const result = await rssMonitorTask(c.env)
+  return c.json(result)
+})
+
+// HTTP触发推送任务
+monitor.post('/push', async (c) => {
+  const result = await pushTask(c.env)
+  return c.json(result)
+})
+
+// 手动触发推送任务（GET请求）
+monitor.get('/push', async (c) => {
+  const result = await pushTask(c.env)
   return c.json(result)
 })
 
@@ -484,21 +568,63 @@ monitor.get('/status', (c) => {
   return c.json({
     service: 'RSS Monitor Service',
     status: 'running',
-    version: '1.0.0',
+    version: '2.0.0',
     endpoints: [
-      'POST /monitor/check - 手动触发监控',
-      'GET /monitor/check - 手动触发监控（GET方式）',
+      'POST /monitor/check - RSS监控任务（抓取RSS，创建推送记录）',
+      'GET /monitor/check - RSS监控任务（GET方式）',
+      'POST /monitor/push - 推送任务（发送待推送记录）',
+      'GET /monitor/push - 推送任务（GET方式）',
       'GET /monitor/status - 服务状态'
     ],
+    architecture: {
+      rssTask: '负责抓取RSS数据并创建推送记录',
+      pushTask: '负责发送待推送的消息记录',
+      separation: '两个任务可以独立调度和监控'
+    },
     timestamp: new Date().toISOString()
   })
 })
 
-// 定时任务处理函数（供Cron触发使用）
+// CF Worker 定时任务入口函数
+export async function scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+  // 根据cron配置决定执行哪个任务
+  // 可以通过event.cron来区分不同的定时任务
+  console.log('🕐 定时任务触发:', event.cron)
+  
+  try {
+    // 默认执行RSS监控任务
+    // 如果需要区分任务，可以根据cron表达式或添加环境变量配置
+    const rssResult = await rssMonitorTask(env)
+    console.log('✅ RSS监控定时任务完成:', rssResult)
+    
+    // 执行推送任务
+    const pushResult = await pushTask(env)
+    console.log('✅ 推送定时任务完成:', pushResult)
+    
+  } catch (error) {
+    console.error('❌ 定时任务执行失败:', error)
+  }
+}
+
+// RSS监控定时任务处理函数
+export async function handleRSSScheduled(env: Env): Promise<void> {
+  console.log('🕐 定时任务触发RSS监控...')
+  const result = await rssMonitorTask(env)
+  console.log('✅ RSS监控定时任务完成:', result)
+}
+
+// 推送定时任务处理函数
+export async function handlePushScheduled(env: Env): Promise<void> {
+  console.log('🕐 定时任务触发推送任务...')
+  const result = await pushTask(env)
+  console.log('✅ 推送定时任务完成:', result)
+}
+
+// 兼容性：保留原有的定时任务处理函数
 export async function handleScheduled(env: Env): Promise<void> {
-  console.log('定时任务触发RSS监控...')
-  const result = await monitorRSS(env)
-  console.log('定时任务完成:', result)
+  console.log('🕐 定时任务触发RSS监控...')
+  const result = await rssMonitorTask(env)
+  console.log('✅ 定时任务完成:', result)
 }
 
 export default monitor 
