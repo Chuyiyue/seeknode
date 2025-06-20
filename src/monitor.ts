@@ -17,6 +17,19 @@ interface RSSPost {
   creator: string
 }
 
+// 数据库中的帖子类型
+interface DBPost {
+  id: number
+  post_id: number
+  title: string
+  content: string
+  pub_date: string
+  category: string
+  creator: string
+  is_push: number
+  created_at: string
+}
+
 // 用户信息接口
 interface User {
   id: number
@@ -134,11 +147,75 @@ async function getUserKeywords(db: D1Database, userId: number): Promise<KeywordS
   }
 }
 
+// 保存RSS帖子到数据库
+async function savePostsToDatabase(db: D1Database, posts: RSSPost[]): Promise<number> {
+  let savedCount = 0
+  
+  try {
+    for (const post of posts) {
+      // 检查帖子是否已存在
+      const existing = await db.prepare('SELECT id FROM posts WHERE post_id = ?')
+        .bind(parseInt(post.id))
+        .first()
+      
+      if (!existing) {
+        // 插入新帖子
+        await db.prepare(`
+          INSERT INTO posts (post_id, title, content, pub_date, category, creator, is_push)
+          VALUES (?, ?, ?, ?, ?, ?, 0)
+        `).bind(
+          parseInt(post.id),
+          post.title,
+          post.description,
+          post.pubDate,
+          post.category,
+          post.creator
+        ).run()
+        
+        savedCount++
+        console.log(`保存新帖子: ${post.title} (ID: ${post.id})`)
+      }
+    }
+  } catch (error) {
+    console.error('保存帖子到数据库失败:', error)
+  }
+  
+  return savedCount
+}
+
+// 从数据库获取待推送的帖子
+async function getUnpushedPosts(db: D1Database, limit: number = 50): Promise<DBPost[]> {
+  try {
+    const result = await db.prepare(`
+      SELECT * FROM posts 
+      WHERE is_push = 0 
+      ORDER BY created_at DESC 
+      LIMIT ?
+    `).bind(limit).all()
+    
+    return result.results as unknown as DBPost[]
+  } catch (error) {
+    console.error('获取待推送帖子失败:', error)
+    return []
+  }
+}
+
+// 标记帖子为已推送
+async function markPostAsPushed(db: D1Database, postId: number): Promise<void> {
+  try {
+    await db.prepare('UPDATE posts SET is_push = 1 WHERE post_id = ?')
+      .bind(postId)
+      .run()
+  } catch (error) {
+    console.error('标记帖子为已推送失败:', error)
+  }
+}
+
 // 检查是否已经发送过通知
-async function isAlreadySent(db: D1Database, chatId: number, postId: string): Promise<boolean> {
+async function isAlreadySent(db: D1Database, chatId: number, postId: number): Promise<boolean> {
   try {
     const result = await db.prepare('SELECT id FROM push_logs WHERE chat_id = ? AND post_id = ?')
-      .bind(chatId, parseInt(postId))
+      .bind(chatId, postId)
       .first()
     return !!result
   } catch (error) {
@@ -148,20 +225,20 @@ async function isAlreadySent(db: D1Database, chatId: number, postId: string): Pr
 }
 
 // 记录推送日志
-async function logPush(db: D1Database, userId: number, chatId: number, postId: string, subId: number, status: number, errorMessage?: string): Promise<void> {
+async function logPush(db: D1Database, userId: number, chatId: number, postId: number, subId: number, status: number, errorMessage?: string): Promise<void> {
   try {
     await db.prepare(`
       INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_status, error_message)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).bind(userId, chatId, parseInt(postId), subId, status, errorMessage || null).run()
+    `).bind(userId, chatId, postId, subId, status, errorMessage || null).run()
   } catch (error) {
     console.error('记录推送日志失败:', error)
   }
 }
 
 // 关键词匹配函数
-function matchKeywords(post: RSSPost, keywords: KeywordSub): boolean {
-  const searchText = `${post.title} ${post.description} ${post.category} ${post.creator}`.toLowerCase()
+function matchKeywords(post: DBPost, keywords: KeywordSub): boolean {
+  const searchText = `${post.title} ${post.content} ${post.category} ${post.creator}`.toLowerCase()
   
   const keyword1 = keywords.keyword1?.toLowerCase()
   const keyword2 = keywords.keyword2?.toLowerCase()
@@ -192,22 +269,19 @@ function matchKeywords(post: RSSPost, keywords: KeywordSub): boolean {
 }
 
 // 发送Telegram消息
-async function sendTelegramMessage(botToken: string, chatId: number, post: RSSPost, matchedKeywords: string[]): Promise<boolean> {
+async function sendTelegramMessage(botToken: string, chatId: number, post: DBPost, matchedKeywords: string[]): Promise<boolean> {
   try {
     const bot = new Bot(botToken)
     
-    const message = `🔔 *关键词匹配提醒*\n\n` +
-      `📋 **标题:** ${post.title}\n\n` +
-      `📝 **描述:** ${post.description.substring(0, 300)}${post.description.length > 300 ? '...' : ''}\n\n` +
-      `🏷️ **分类:** ${post.category}\n` +
-      `👤 **作者:** ${post.creator}\n` +
-      `📅 **发布时间:** ${post.pubDate}\n\n` +
-      `🎯 **匹配关键词:** ${matchedKeywords.join(', ')}\n\n` +
-      `📎 **帖子ID:** ${post.id}`
+    // 构建帖子链接
+    const postUrl = `https://www.nodeseek.com/post-${post.post_id}-1/`
+    
+    const message = `🎯 **匹配关键词:** ${matchedKeywords.join(', ')}\n\n` +
+      `📋 [${post.title}](${postUrl})`
     
     await bot.api.sendMessage(chatId, message, {
       parse_mode: 'Markdown',
-      disable_web_page_preview: true
+      disable_web_page_preview: false
     } as any)
     
     return true
@@ -222,21 +296,48 @@ async function monitorRSS(env: Env): Promise<{ success: boolean; message: string
   try {
     console.log('开始RSS监控...')
     
-    // 获取RSS数据
-    const posts = await fetchRSSData()
-    if (posts.length === 0) {
+    // 第一步：获取RSS数据并保存到数据库
+    const rssPosts = await fetchRSSData()
+    if (rssPosts.length === 0) {
       return { success: false, message: '未获取到RSS数据', stats: {} }
+    }
+    
+    // 保存RSS数据到数据库
+    const savedCount = await savePostsToDatabase(env.DB, rssPosts)
+    console.log(`保存了 ${savedCount} 个新帖子到数据库`)
+    
+    // 第二步：从数据库获取待推送的帖子
+    const posts = await getUnpushedPosts(env.DB)
+    if (posts.length === 0) {
+      return { 
+        success: true, 
+        message: '没有待推送的帖子', 
+        stats: { 
+          rssPostsCount: rssPosts.length,
+          savedNewPosts: savedCount,
+          postsToCheck: 0
+        } 
+      }
     }
     
     // 获取所有活跃用户
     const users = await getActiveUsers(env.DB)
     if (users.length === 0) {
-      return { success: true, message: '没有活跃用户', stats: { posts: posts.length } }
+      return { 
+        success: true, 
+        message: '没有活跃用户', 
+        stats: { 
+          rssPostsCount: rssPosts.length,
+          savedNewPosts: savedCount,
+          postsToCheck: posts.length 
+        } 
+      }
     }
     
     let totalNotifications = 0
     let successfulNotifications = 0
     let failedNotifications = 0
+    const pushedPostIds = new Set<number>()
     
     // 遍历每个用户
     for (const user of users) {
@@ -251,7 +352,7 @@ async function monitorRSS(env: Env): Promise<{ success: boolean; message: string
         // 遍历每个帖子
         for (const post of posts) {
           // 检查是否已经发送过通知
-          if (await isAlreadySent(env.DB, user.chat_id, post.id)) {
+          if (await isAlreadySent(env.DB, user.chat_id, post.post_id)) {
             continue
           }
           
@@ -271,10 +372,11 @@ async function monitorRSS(env: Env): Promise<{ success: boolean; message: string
               
               if (sent) {
                 successfulNotifications++
-                await logPush(env.DB, user.id, user.chat_id, post.id, keywords.id, 1)
+                await logPush(env.DB, user.id, user.chat_id, post.post_id, keywords.id, 1)
+                pushedPostIds.add(post.post_id)
               } else {
                 failedNotifications++
-                await logPush(env.DB, user.id, user.chat_id, post.id, keywords.id, 0, '发送失败')
+                await logPush(env.DB, user.id, user.chat_id, post.post_id, keywords.id, 0, '发送失败')
               }
               
               // 每个帖子对每个用户只发送一次，即使匹配多个关键词
@@ -287,17 +389,25 @@ async function monitorRSS(env: Env): Promise<{ success: boolean; message: string
       }
     }
     
+    // 标记已推送的帖子
+    for (const postId of pushedPostIds) {
+      await markPostAsPushed(env.DB, postId)
+    }
+    
     const stats = {
-      posts: posts.length,
+      rssPostsCount: rssPosts.length,
+      savedNewPosts: savedCount,
+      postsToCheck: posts.length,
       users: users.length,
       totalNotifications,
       successfulNotifications,
-      failedNotifications
+      failedNotifications,
+      pushedPosts: pushedPostIds.size
     }
     
     return {
       success: true,
-      message: `监控完成，发送了 ${successfulNotifications} 条通知`,
+      message: `监控完成，保存了 ${savedCount} 个新帖子，发送了 ${successfulNotifications} 条通知`,
       stats
     }
     

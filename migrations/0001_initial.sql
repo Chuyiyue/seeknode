@@ -1,3 +1,18 @@
+-- psots 表
+CREATE TABLE IF NOT EXISTS posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  post_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  pub_date DATETIME NOT NULL,
+  category TEXT NOT NULL,
+  creator TEXT NOT NULL,
+  is_push INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_posts_post_id ON posts(post_id);
+CREATE INDEX IF NOT EXISTS idx_posts_is_push ON posts(is_push);
+
 -- users 表
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
