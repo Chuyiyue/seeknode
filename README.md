@@ -109,10 +109,10 @@ wrangler secret put BOT_TOKEN
 ### 3. 数据库设置
 ```bash
 # 创建D1数据库
-wrangler d1 create hono-cf-prod
+wrangler d1 create seeknode-prod
 
 # 运行数据库迁移
-wrangler d1 migrations apply hono-cf-prod
+wrangler d1 migrations apply seeknode-prod
 ```
 
 ### 4. 部署应用
@@ -141,7 +141,7 @@ curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
 {
   "triggers": {
     "crons": [
-      "*/10 * * * *"  // 每1分钟执行一次
+      "*/1 * * * *"  // 每1分钟执行一次
     ]
   }
 }

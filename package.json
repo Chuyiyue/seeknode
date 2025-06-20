@@ -1,5 +1,5 @@
 {
-  "name": "hono-cf",
+  "name": "seeknode",
   "scripts": {
     "dev": "wrangler dev",
     "dev:config": "wrangler dev --config wrangler.dev.jsonc",
@@ -7,12 +7,12 @@
     "deploy:staging": "wrangler deploy --config wrangler.staging.jsonc --minify",
     "deploy:prod": "wrangler deploy --config wrangler.prod.jsonc --minify",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "db:create:dev": "wrangler d1 create hono-cf-dev",
-    "db:create:staging": "wrangler d1 create hono-cf-staging", 
-    "db:create:prod": "wrangler d1 create hono-cf-prod",
-    "db:migrate:dev": "wrangler d1 migrations apply hono-cf-dev --config wrangler.dev.jsonc",
-    "db:migrate:staging": "wrangler d1 migrations apply hono-cf-staging --config wrangler.staging.jsonc",
-    "db:migrate:prod": "wrangler d1 migrations apply hono-cf-prod --config wrangler.prod.jsonc"
+    "db:create:dev": "wrangler d1 create seeknode-dev",
+    "db:create:staging": "wrangler d1 create seeknode-staging", 
+    "db:create:prod": "wrangler d1 create seeknode-prod",
+    "db:migrate:dev": "wrangler d1 migrations apply seeknode-dev --config wrangler.dev.jsonc",
+    "db:migrate:staging": "wrangler d1 migrations apply seeknode-staging --config wrangler.staging.jsonc",
+    "db:migrate:prod": "wrangler d1 migrations apply seeknode-prod --config wrangler.prod.jsonc"
   },
   "dependencies": {
     "hono": "^4.7.11",

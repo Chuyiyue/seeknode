@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { webhookCallback } from 'grammy'
 import rss from './rss'
 import monitor, { handleScheduled } from './monitor'
+import setup from './setup'
 import { createBotWithCommands } from './bot-commands'
 
 // 创建 Hono 应用
@@ -18,6 +19,9 @@ app.route('/rss', rss)
 // 挂载监控路由
 app.route('/monitor', monitor)
 
+// 挂载Setup路由
+app.route('/setup', setup)
+
 // 健康检查端点
 app.get('/', (c) => {
   return c.json({ 
@@ -29,6 +33,13 @@ app.get('/', (c) => {
       '关键词匹配',
       '定时任务'
     ],
+    endpoints: {
+      setup: '/setup - 系统初始化页面',
+      rss_api: '/rss - RSS相关API',
+      monitor_api: '/monitor - 监控相关API',
+      webhook: '/webhook - Telegram Bot Webhook',
+      debug: '/debug - 调试信息'
+    },
     timestamp: new Date().toISOString()
   })
 })
