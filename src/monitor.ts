@@ -583,15 +583,16 @@ export async function scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionC
   console.log('🕐 定时任务触发:', event.cron)
 
   try {
-    // 先执行推送任务（处理待推送的记录）
+    // 先执行RSS监控任务（抓取新内容并创建推送记录）
+    console.log('📡 执行RSS监控任务...')
+    const rssResult = await rssMonitorTask(env)
+    console.log('✅ RSS监控任务完成:', rssResult)
+
+    // 再执行推送任务（处理待推送的记录）
     console.log('📤 执行推送任务...')
     const pushResult = await pushTask(env)
     console.log('✅ 推送任务完成:', pushResult)
     
-    // 再执行RSS监控任务（抓取新内容并创建推送记录）
-    console.log('📡 执行RSS监控任务...')
-    const rssResult = await rssMonitorTask(env)
-    console.log('✅ RSS监控任务完成:', rssResult)
     
   } catch (error) {
     console.error(`❌ 定时任务执行失败:`, error)

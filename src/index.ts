@@ -1,9 +1,20 @@
 import { Hono } from 'hono'
 import { webhookCallback } from 'grammy'
 import rss from './rss'
-import monitor, { handleScheduled } from './monitor'
+import monitor, { scheduled as monitorScheduled } from './monitor'
 import setup from './setup'
 import { createBotWithCommands } from './bot-commands'
+
+// CF Worker 类型定义
+interface ScheduledEvent {
+  cron: string
+  scheduledTime: number
+}
+
+interface ExecutionContext {
+  waitUntil(promise: Promise<any>): void
+  passThroughOnException(): void
+}
 
 // 创建 Hono 应用
 const app = new Hono<{
@@ -89,9 +100,6 @@ export default {
   // 定时任务处理器
   scheduled: async (event: ScheduledEvent, env: any, ctx: ExecutionContext) => {
     console.log('定时任务触发:', event.cron)
-    ctx.waitUntil(handleScheduled(env))
+    await monitorScheduled(event, env, ctx)
   }
 }
-
-// 导出定时任务处理函数供 Cloudflare Worker 使用
-export { handleScheduled }
