@@ -580,44 +580,29 @@ monitor.get('/status', (c) => {
 
 // CF Worker 定时任务入口函数
 export async function scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-  // 根据cron配置决定执行哪个任务
-  // 可以通过event.cron来区分不同的定时任务
   console.log('🕐 定时任务触发:', event.cron)
-  
+
   try {
-    // 默认执行RSS监控任务
-    // 如果需要区分任务，可以根据cron表达式或添加环境变量配置
-    const rssResult = await rssMonitorTask(env)
-    console.log('✅ RSS监控定时任务完成:', rssResult)
-    
-    // 执行推送任务
+    // 先执行推送任务（处理待推送的记录）
+    console.log('📤 执行推送任务...')
     const pushResult = await pushTask(env)
-    console.log('✅ 推送定时任务完成:', pushResult)
+    console.log('✅ 推送任务完成:', pushResult)
+    
+    // 再执行RSS监控任务（抓取新内容并创建推送记录）
+    console.log('📡 执行RSS监控任务...')
+    const rssResult = await rssMonitorTask(env)
+    console.log('✅ RSS监控任务完成:', rssResult)
     
   } catch (error) {
-    console.error('❌ 定时任务执行失败:', error)
+    console.error(`❌ 定时任务执行失败:`, error)
   }
 }
 
-// RSS监控定时任务处理函数
-export async function handleRSSScheduled(env: Env): Promise<void> {
-  console.log('🕐 定时任务触发RSS监控...')
-  const result = await rssMonitorTask(env)
-  console.log('✅ RSS监控定时任务完成:', result)
-}
-
-// 推送定时任务处理函数
-export async function handlePushScheduled(env: Env): Promise<void> {
-  console.log('🕐 定时任务触发推送任务...')
-  const result = await pushTask(env)
-  console.log('✅ 推送定时任务完成:', result)
-}
-
-// 兼容性：保留原有的定时任务处理函数
+// 兼容性：保留原有的手动触发函数
 export async function handleScheduled(env: Env): Promise<void> {
-  console.log('🕐 定时任务触发RSS监控...')
+  console.log('🕐 手动触发RSS监控...')
   const result = await rssMonitorTask(env)
-  console.log('✅ 定时任务完成:', result)
+  console.log('✅ RSS监控完成:', result)
 }
 
 export default monitor 
