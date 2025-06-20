@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "hono-cf",
+  "name": "seeknode",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-18",
   // "compatibility_flags": [
@@ -8,10 +8,10 @@
   // ],
   // 环境变量在生产环境中通过 wrangler secret 设置
   // 本地开发使用 .dev.vars 文件
-  "vars": {
-    "BOT_TOKEN": "YOUR_ACTUAL_BOT_TOKEN_HERE",
-    "START_COMMAND": "start"
-  },
+  // "vars": {
+  //   "BOT_TOKEN": "YOUR_ACTUAL_BOT_TOKEN_HERE",
+  //   "START_COMMAND": "start"
+  // },
   // 定时任务配置 - RSS监控
   "triggers": {
     "crons": [

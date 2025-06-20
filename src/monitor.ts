@@ -274,10 +274,10 @@ async function sendTelegramMessage(botToken: string, chatId: number, post: DBPos
     const bot = new Bot(botToken)
     
     // 构建帖子链接
-    const postUrl = `https://www.nodeseek.com/post-${post.post_id}-1/`
+    const postUrl = `https://www.nodeseek.com/post-${post.post_id}-1`
     
-    const message = `🎯 **匹配关键词:** ${matchedKeywords.join(', ')}\n\n` +
-      `📋 [${post.title}](${postUrl})`
+    const message = `🎯 ${matchedKeywords.join(', ')}\n\n` +
+      `[${post.title}](${postUrl})`
     
     await bot.api.sendMessage(chatId, message, {
       parse_mode: 'Markdown',

@@ -160,7 +160,7 @@ export function createBotWithCommands(token: string, db: D1Database) {
       `/info - 显示用户信息\n` +
       `/list - 查看我的订阅\n` +
       `/add - 添加关键词订阅\n` +
-      `/remove - 删除订阅\n` +
+      `/del - 删除订阅\n` +
       `/status - 查看服务状态\n\n` +
       `💡 使用 /add 关键词1 关键词2 关键词3 来添加订阅`
     )
@@ -176,7 +176,7 @@ export function createBotWithCommands(token: string, db: D1Database) {
       `/info - 显示用户和订阅信息\n` +
       `/list - 查看我的关键词订阅\n` +
       `/add 关键词1 [关键词2] [关键词3] - 添加关键词订阅\n` +
-      `/remove 订阅ID - 删除指定订阅\n` +
+      `/del 订阅ID - 删除指定订阅\n` +
       `/status - 查看服务运行状态\n\n` +
       `📋 **使用示例：**\n` +
       `• \`/add 服务器\` - 监控包含"服务器"的帖子\n` +
@@ -240,7 +240,7 @@ export function createBotWithCommands(token: string, db: D1Database) {
       message += `   📊 匹配数: ${sub.keywords_count}\n\n`
     })
     
-    message += `💡 使用 /remove 订阅ID 来删除订阅`
+    message += `💡 使用 /del 订阅ID 来删除订阅`
     
     return ctx.reply(message)
   })
@@ -292,8 +292,8 @@ export function createBotWithCommands(token: string, db: D1Database) {
     }
   })
 
-  // /remove 命令
-  bot.command('remove', async (ctx) => {
+  // /del 命令
+  bot.command('del', async (ctx) => {
     const user = await getOrCreateUser(db, ctx)
     if (!user) {
       return ctx.reply('❌ 获取用户信息失败')
@@ -306,7 +306,7 @@ export function createBotWithCommands(token: string, db: D1Database) {
     if (parts.length !== 2) {
       return ctx.reply(
         `❌ 请提供订阅ID！\n\n` +
-        `使用方法: /remove 订阅ID\n` +
+        `使用方法: /del 订阅ID\n` +
         `使用 /list 命令查看订阅ID`
       )
     }
