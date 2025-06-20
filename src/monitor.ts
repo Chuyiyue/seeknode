@@ -354,7 +354,7 @@ async function pushTask(env: Env): Promise<{ success: boolean; message: string; 
   try {
     console.log('开始推送任务...')
     
-    // 获取待发送的推送记录（简化重试逻辑）
+    // 获取待发送的推送记录（只处理未发送的记录）
     const pendingLogs = await env.DB.prepare(`
       SELECT pl.*, p.title, p.content, p.category, p.creator, p.post_id,
              ks.keyword1, ks.keyword2, ks.keyword3,
@@ -364,9 +364,8 @@ async function pushTask(env: Env): Promise<{ success: boolean; message: string; 
       JOIN keywords_sub ks ON pl.sub_id = ks.id
       JOIN users u ON pl.user_id = u.id
       WHERE pl.push_status = 0 
-      AND (pl.created_at > datetime('now', '-1 day'))  -- 只处理24小时内的记录
       ORDER BY pl.created_at ASC
-      LIMIT 50
+      LIMIT 100
     `).all()
     
     if (pendingLogs.results.length === 0) {
@@ -408,7 +407,7 @@ async function pushTask(env: Env): Promise<{ success: boolean; message: string; 
         const sent = await sendTelegramMessage(env.BOT_TOKEN, Number(log.chat_id), post, matchedKeywords)
         
         if (sent.success) {
-          // 发送成功，更新状态
+          // 发送成功
           await env.DB.prepare(`
             UPDATE push_logs 
             SET push_status = 1, error_message = NULL
@@ -418,26 +417,27 @@ async function pushTask(env: Env): Promise<{ success: boolean; message: string; 
           successful++
           console.log(`✅ 成功发送推送到用户 ${log.chat_id}，帖子 ${log.post_id}`)
         } else {
-          // 发送失败，更新错误信息
+          // 发送失败，也标记为已处理（不重试）
           await env.DB.prepare(`
             UPDATE push_logs 
-            SET error_message = ?
+            SET push_status = 1, error_message = ?
             WHERE id = ?
           `).bind(sent.error, log.id).run()
           
           failed++
-          console.log(`❌ 发送失败，用户 ${log.chat_id}，帖子 ${log.post_id}`)
+          console.log(`❌ 发送失败，用户 ${log.chat_id}，帖子 ${log.post_id}，原因: ${sent.error}`)
           
+          // 如果用户屏蔽了机器人，更新用户状态
           if (sent.userBlocked) {
             await deactivateUser(env.DB, Number(log.chat_id))
           }
         }
         
       } catch (error) {
-        // 处理单个发送任务时的错误
+        // 处理单个发送任务时的错误，也标记为已处理
         await env.DB.prepare(`
           UPDATE push_logs 
-          SET error_message = ?
+          SET push_status = 1, error_message = ?
           WHERE id = ?
         `).bind(String(error), log.id).run()
         
@@ -445,13 +445,6 @@ async function pushTask(env: Env): Promise<{ success: boolean; message: string; 
         console.error(`❌ 处理推送记录 ${log.id} 时出错:`, error)
       }
     }
-    
-    // 清理超过24小时的失败记录
-    await env.DB.prepare(`
-      DELETE FROM push_logs 
-      WHERE push_status = 0 
-      AND created_at < datetime('now', '-1 day')
-    `).run()
     
     const stats = {
       pushAttempts: pendingLogs.results.length,
@@ -461,7 +454,7 @@ async function pushTask(env: Env): Promise<{ success: boolean; message: string; 
     
     return {
       success: true,
-      message: `推送任务完成：尝试发送 ${pendingLogs.results.length} 条，成功 ${successful} 条，失败 ${failed} 条`,
+      message: `推送任务完成：处理 ${pendingLogs.results.length} 条记录，成功 ${successful} 条，失败 ${failed} 条`,
       stats
     }
     
