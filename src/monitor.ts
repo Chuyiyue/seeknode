@@ -187,58 +187,65 @@ async function savePostsToDatabase(
     }
 
     // 步骤1: 批量查询已存在的帖子ID
-    const postIds = posts.map(post => parseInt(post.id));
-    const placeholders = postIds.map(() => '?').join(',');
-    
+    const postIds = posts.map((post) => parseInt(post.id));
+    const placeholders = postIds.map(() => "?").join(",");
+
     const existingResult = await db
       .prepare(`SELECT post_id FROM posts WHERE post_id IN (${placeholders})`)
       .bind(...postIds)
       .all();
-    
+
     const existingIds = new Set(
       existingResult.results.map((row: any) => row.post_id)
     );
 
     // 步骤2: 过滤出需要插入的新帖子
-    const newPosts = posts.filter(post => !existingIds.has(parseInt(post.id)));
-    
+    const newPosts = posts.filter(
+      (post) => !existingIds.has(parseInt(post.id))
+    );
+
     if (newPosts.length === 0) {
       console.log("没有新帖子需要保存");
       return 0;
     }
 
     // 步骤3: 准备批量插入的语句
-    const insertStatements = newPosts.map(post => {
-      return db.prepare(`
+    const insertStatements = newPosts.map((post) => {
+      return db
+        .prepare(
+          `
         INSERT INTO posts (post_id, title, content, pub_date, category, creator, is_push)
         VALUES (?, ?, ?, ?, ?, ?, 0)
-      `).bind(
-        parseInt(post.id),
-        post.title,
-        post.description,
-        post.pubDate,
-        post.category,
-        post.creator
-      );
+      `
+        )
+        .bind(
+          parseInt(post.id),
+          post.title,
+          post.description,
+          post.pubDate,
+          post.category,
+          post.creator
+        );
     });
 
     // 步骤4: 批量执行插入操作
     const batchResult = await db.batch(insertStatements);
-    
+
     // 统计成功插入的数量
-    savedCount = batchResult.filter(result => result.success).length;
-    
-    console.log(`批量保存完成: ${savedCount}/${newPosts.length} 个新帖子保存成功`);
-    
+    savedCount = batchResult.filter((result) => result.success).length;
+
+    console.log(
+      `批量保存完成: ${savedCount}/${newPosts.length} 个新帖子保存成功`
+    );
+
     // 记录保存的帖子信息
-    newPosts.slice(0, Math.min(5, newPosts.length)).forEach(post => {
+    newPosts.slice(0, Math.min(5, newPosts.length)).forEach((post) => {
       console.log(`保存新帖子: ${post.title} (ID: ${post.id})`);
     });
-    
+
     if (newPosts.length > 5) {
       console.log(`... 还有 ${newPosts.length - 5} 个帖子`);
     }
-
   } catch (error) {
     console.error("批量保存帖子到数据库失败:", error);
   }
@@ -533,19 +540,23 @@ async function pushTask(
 }
 
 // 批量获取所有用户关键词订阅
-async function getAllUserKeywords(db: D1Database): Promise<Map<number, KeywordSub[]>> {
+async function getAllUserKeywords(
+  db: D1Database
+): Promise<Map<number, KeywordSub[]>> {
   try {
     const result = await db
-      .prepare(`
+      .prepare(
+        `
         SELECT ks.*, u.chat_id 
         FROM keywords_sub ks 
         JOIN users u ON ks.user_id = u.id 
         WHERE ks.is_active = 1 AND u.is_active = 1
-      `)
+      `
+      )
       .all();
-    
+
     const userKeywordsMap = new Map<number, KeywordSub[]>();
-    
+
     for (const row of result.results as any[]) {
       const userId = row.user_id;
       if (!userKeywordsMap.has(userId)) {
@@ -561,7 +572,7 @@ async function getAllUserKeywords(db: D1Database): Promise<Map<number, KeywordSu
         is_active: row.is_active,
       });
     }
-    
+
     return userKeywordsMap;
   } catch (error) {
     console.error("批量获取用户关键词失败:", error);
@@ -585,7 +596,7 @@ async function createPushLogs(
     // 步骤1: 批量获取所有活跃用户和他们的关键词订阅
     const [users, userKeywordsMap] = await Promise.all([
       getActiveUsers(env.DB),
-      getAllUserKeywords(env.DB)
+      getAllUserKeywords(env.DB),
     ]);
 
     if (users.length === 0 || userKeywordsMap.size === 0) {
@@ -605,7 +616,7 @@ async function createPushLogs(
     for (const post of posts) {
       for (const user of users) {
         const keywordSubs = userKeywordsMap.get(user.id) || [];
-        
+
         for (const keywords of keywordSubs) {
           if (matchKeywords(post, keywords)) {
             totalLogs++;
@@ -626,18 +637,17 @@ async function createPushLogs(
               .replace(/\]/g, "」")
               .replace(/\(/g, "（")
               .replace(/\)/g, "）");
-            
+
             // 构建消息文本
             const pushText =
-              `🎯 ${matchedKeywords.join(", ")}\n\n` +
-              `[${title}](${postUrl})`;
+              `🎯 ${matchedKeywords.join(", ")}\n\n` + `[${title}](${postUrl})`;
 
             potentialMatches.push({
               user,
               post,
               keywords,
               matchedKeywords,
-              pushText
+              pushText,
             });
 
             // 每个用户对每个帖子只创建一个push_logs记录，即使匹配多个关键词
@@ -649,42 +659,55 @@ async function createPushLogs(
 
     if (potentialMatches.length === 0) {
       // 仍需标记帖子为已推送
-      await batchMarkPostsAsPushed(env.DB, posts.map(p => p.post_id));
+      await batchMarkPostsAsPushed(
+        env.DB,
+        posts.map((p) => p.post_id)
+      );
       return { totalLogs: 0, createdLogs: 0 };
     }
 
     // 步骤3: 批量检查已存在的推送记录
-    const existingChecks = potentialMatches.map(match => 
-      `(${match.user.id}, ${match.post.post_id}, ${match.keywords.id})`
-    ).join(',');
+    const existingChecks = potentialMatches
+      .map(
+        (match) =>
+          `(${match.user.id}, ${match.post.post_id}, ${match.keywords.id})`
+      )
+      .join(",");
 
-    const existingResult = await env.DB.prepare(`
+    const existingResult = await env.DB.prepare(
+      `
       SELECT user_id, post_id, sub_id 
       FROM push_logs 
       WHERE (user_id, post_id, sub_id) IN (${existingChecks})
-    `).all();
+    `
+    ).all();
 
     // 创建已存在记录的Set，用于快速查找
     const existingSet = new Set(
-      existingResult.results.map((row: any) => 
-        `${row.user_id}_${row.post_id}_${row.sub_id}`
+      existingResult.results.map(
+        (row: any) => `${row.user_id}_${row.post_id}_${row.sub_id}`
       )
     );
 
     // 步骤4: 过滤出需要插入的新记录
-    const newMatches = potentialMatches.filter(match => 
-      !existingSet.has(`${match.user.id}_${match.post.post_id}_${match.keywords.id}`)
+    const newMatches = potentialMatches.filter(
+      (match) =>
+        !existingSet.has(
+          `${match.user.id}_${match.post.post_id}_${match.keywords.id}`
+        )
     );
 
     if (newMatches.length === 0) {
       console.log("所有匹配记录都已存在，无需创建新的推送记录");
     } else {
       // 步骤5: 批量插入新的推送记录
-      const insertStatements = newMatches.map(match =>
-        env.DB.prepare(`
+      const insertStatements = newMatches.map((match) =>
+        env.DB.prepare(
+          `
           INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_text, push_status, error_message)
           VALUES (?, ?, ?, ?, ?, 0, NULL)
-        `).bind(
+        `
+        ).bind(
           match.user.id,
           match.user.chat_id,
           match.post.post_id,
@@ -694,23 +717,29 @@ async function createPushLogs(
       );
 
       const batchResult = await env.DB.batch(insertStatements);
-      createdLogs = batchResult.filter(result => result.success).length;
+      createdLogs = batchResult.filter((result) => result.success).length;
 
-      console.log(`批量创建推送记录完成: ${createdLogs}/${newMatches.length} 条记录创建成功`);
-      
+      console.log(
+        `批量创建推送记录完成: ${createdLogs}/${newMatches.length} 条记录创建成功`
+      );
+
       // 记录前几个创建的推送记录
-      newMatches.slice(0, Math.min(3, newMatches.length)).forEach(match => {
-        console.log(`📝 为用户 ${match.user.chat_id} 创建帖子 ${match.post.post_id} 的推送记录`);
+      newMatches.slice(0, Math.min(3, newMatches.length)).forEach((match) => {
+        console.log(
+          `📝 为用户 ${match.user.chat_id} 创建帖子 ${match.post.post_id} 的推送记录`
+        );
       });
-      
+
       if (newMatches.length > 3) {
         console.log(`... 还有 ${newMatches.length - 3} 个推送记录`);
       }
     }
 
     // 步骤6: 批量标记帖子为已推送
-    await batchMarkPostsAsPushed(env.DB, posts.map(p => p.post_id));
-
+    await batchMarkPostsAsPushed(
+      env.DB,
+      posts.map((p) => p.post_id)
+    );
   } catch (error) {
     console.error("批量创建推送记录失败:", error);
   }
@@ -719,16 +748,21 @@ async function createPushLogs(
 }
 
 // 批量标记帖子为已推送
-async function batchMarkPostsAsPushed(db: D1Database, postIds: number[]): Promise<void> {
+async function batchMarkPostsAsPushed(
+  db: D1Database,
+  postIds: number[]
+): Promise<void> {
   try {
     if (postIds.length === 0) return;
-    
-    const placeholders = postIds.map(() => '?').join(',');
+
+    const placeholders = postIds.map(() => "?").join(",");
     await db
-      .prepare(`UPDATE posts SET is_push = 1 WHERE post_id IN (${placeholders})`)
+      .prepare(
+        `UPDATE posts SET is_push = 1 WHERE post_id IN (${placeholders})`
+      )
       .bind(...postIds)
       .run();
-    
+
     console.log(`✅ 批量标记 ${postIds.length} 个帖子为已匹配完成`);
   } catch (error) {
     console.error("批量标记帖子为已推送失败:", error);
@@ -745,6 +779,61 @@ async function deactivateUser(db: D1Database, chatId: number): Promise<void> {
     console.log(`🔒 已将用户 ${chatId} 标记为非活跃状态`);
   } catch (error) {
     console.error("更新用户状态失败:", error);
+  }
+}
+
+// 清理过期的推送日志记录
+async function cleanupExpiredPushLogs(
+  env: Env
+): Promise<{ success: boolean; message: string; stats: any }> {
+  try {
+    console.log("开始清理过期推送日志...");
+
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+    // 处理 posts 表中 is_push = 0 的帖子为1
+    const postsResult = await env.DB.prepare(
+      `UPDATE posts 
+       SET is_push = 1 
+       WHERE created_at < ? AND is_push = 0`
+    )
+      .bind(oneHourAgo)
+      .run();
+
+    const postsUpdatedCount = postsResult.meta?.changes || 0;
+    console.log(`🧹 清理完成：更新了 ${postsUpdatedCount} 条过期的帖子`);
+
+    // 更新一个小时前未处理的推送记录（push_status = 0）状态为2
+    const result = await env.DB.prepare(
+      `UPDATE push_logs 
+       SET push_status = 2
+       WHERE created_at < ? AND push_status = 0`
+    )
+      .bind(oneHourAgo)
+      .run();
+
+    const updatedCount = result.meta?.changes || 0;
+
+    const stats = {
+      updatedRecords: updatedCount,
+      cleanupTime: oneHourAgo,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log(`🧹 清理完成：更新了 ${updatedCount} 条过期的未处理推送记录`);
+
+    return {
+      success: true,
+      message: `清理任务完成：更新了 ${updatedCount} 条过期记录`,
+      stats,
+    };
+  } catch (error) {
+    console.error("清理过期推送日志失败:", error);
+    return {
+      success: false,
+      message: `清理任务失败: ${error}`,
+      stats: {},
+    };
   }
 }
 
@@ -826,23 +915,43 @@ monitor.get("/push", async (c) => {
   return c.json(result);
 });
 
+// HTTP触发清理任务
+monitor.post("/cleanup", async (c) => {
+  const result = await cleanupExpiredPushLogs(c.env);
+  return c.json(result);
+});
+
+// 手动触发清理任务（GET请求）
+monitor.get("/cleanup", async (c) => {
+  const result = await cleanupExpiredPushLogs(c.env);
+  return c.json(result);
+});
+
 // 监控状态检查
 monitor.get("/status", (c) => {
   return c.json({
     service: "RSS Monitor Service",
     status: "running",
-    version: "2.0.0",
+    version: "2.1.0",
     endpoints: [
       "POST /monitor/check - RSS监控任务（抓取RSS，创建推送记录）",
       "GET /monitor/check - RSS监控任务（GET方式）",
       "POST /monitor/push - 推送任务（发送待推送记录）",
       "GET /monitor/push - 推送任务（GET方式）",
+      "POST /monitor/cleanup - 清理任务（清理过期推送日志）",
+      "GET /monitor/cleanup - 清理任务（GET方式）",
       "GET /monitor/status - 服务状态",
     ],
     architecture: {
       rssTask: "负责抓取RSS数据并创建推送记录",
       pushTask: "负责发送待推送的消息记录",
-      separation: "两个任务可以独立调度和监控",
+      cleanupTask: "负责清理过期的推送日志记录",
+      separation: "三个任务可以独立调度和监控",
+    },
+    scheduled_tasks: {
+      rss_monitor: "每1分钟执行 - RSS监控任务",
+      push_task: "每2分钟执行 - 推送任务",
+      cleanup_task: "每60分钟执行 - 清理任务",
     },
     timestamp: new Date().toISOString(),
   });
@@ -857,15 +966,40 @@ export async function scheduled(
   console.log("🕐 定时任务触发:", event.cron);
 
   try {
-    // 先执行RSS监控任务（抓取新内容并创建推送记录）
-    console.log("📡 执行RSS监控任务...");
-    const rssResult = await rssMonitorTask(env);
-    console.log("✅ RSS监控任务完成:", rssResult);
+    // 根据cron表达式执行不同的任务
+    switch (event.cron) {
+      case "*/1 * * * *":
+        // RSS监控任务：每1分钟执行一次
+        console.log("📡 执行RSS监控任务...");
+        const rssResult = await rssMonitorTask(env);
+        console.log("✅ RSS监控任务完成:", rssResult);
+        break;
 
-    // 再执行推送任务（处理待推送的记录）
-    console.log("📤 执行推送任务...");
-    const pushResult = await pushTask(env);
-    console.log("✅ 推送任务完成:", pushResult);
+      case "*/2 * * * *":
+        // 推送任务：每2分钟执行一次
+        console.log("📤 执行推送任务...");
+        const pushResult = await pushTask(env);
+        console.log("✅ 推送任务完成:", pushResult);
+        break;
+
+      case "0 * * * *":
+        // 清理任务：每60分钟执行一次
+        console.log("🧹 执行清理任务...");
+        const cleanupResult = await cleanupExpiredPushLogs(env);
+        console.log("✅ 清理任务完成:", cleanupResult);
+        break;
+
+      default:
+        // 兼容原有逻辑：如果是未知的cron表达式，执行RSS监控和推送任务
+        console.log("📡 执行RSS监控任务...");
+        const defaultRssResult = await rssMonitorTask(env);
+        console.log("✅ RSS监控任务完成:", defaultRssResult);
+
+        console.log("📤 执行推送任务...");
+        const defaultPushResult = await pushTask(env);
+        console.log("✅ 推送任务完成:", defaultPushResult);
+        break;
+    }
   } catch (error) {
     console.error(`❌ 定时任务执行失败:`, error);
   }
@@ -877,5 +1011,8 @@ export async function handleScheduled(env: Env): Promise<void> {
   const result = await rssMonitorTask(env);
   console.log("✅ RSS监控完成:", result);
 }
+
+// 导出任务函数供外部调用
+export { pushTask, cleanupExpiredPushLogs };
 
 export default monitor;

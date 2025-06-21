@@ -12,10 +12,12 @@
   //   "BOT_TOKEN": "YOUR_ACTUAL_BOT_TOKEN_HERE",
   //   "START_COMMAND": "start"
   // },
-  // 定时任务配置 - RSS监控
+  // 定时任务配置
   "triggers": {
     "crons": [
-      "*/1 * * * *"
+      "*/1 * * * *",  // RSS监控任务：每1分钟执行一次
+      "*/2 * * * *",  // 推送任务：每2分钟执行一次
+      "0 * * * *"     // 清理任务：每60分钟执行一次（每小时的0分）
     ]
   },
   // "kv_namespaces": [
