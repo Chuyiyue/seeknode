@@ -964,41 +964,61 @@ export async function scheduled(
   ctx: ExecutionContext
 ): Promise<void> {
   console.log("🕐 定时任务触发:", event.cron);
+  console.log("🔍 调试 - event.cron 类型:", typeof event.cron);
+  console.log("🔍 调试 - event.cron 值:", JSON.stringify(event.cron));
+  console.log("🔍 调试 - event.cron 长度:", event.cron.length);
 
   try {
     // 根据cron表达式执行不同的任务
-    switch (event.cron) {
-      case "*/1 * * * *":
-        // RSS监控任务：每1分钟执行一次
-        console.log("📡 执行RSS监控任务...");
+    const cronStr = event.cron.trim();
+    
+    if (cronStr === "*/1 * * * *") {
+      // RSS监控任务：每1分钟执行一次
+      console.log("📡 匹配到RSS监控任务 - 执行RSS监控任务...");
+      const rssResult = await rssMonitorTask(env);
+      console.log("✅ RSS监控任务完成:", rssResult);
+    } else if (cronStr === "*/2 * * * *") {
+      // 推送任务：每2分钟执行一次
+      console.log("📤 匹配到推送任务 - 执行推送任务...");
+      const pushResult = await pushTask(env);
+      console.log("✅ 推送任务完成:", pushResult);
+    } else if (cronStr === "0 * * * *") {
+      // 清理任务：每60分钟执行一次
+      console.log("🧹 匹配到清理任务 - 执行清理任务...");
+      const cleanupResult = await cleanupExpiredPushLogs(env);
+      console.log("✅ 清理任务完成:", cleanupResult);
+    } else {
+      // 兼容原有逻辑：如果是未知的cron表达式，执行RSS监控和推送任务
+      console.log("⚠️  未匹配到任何已知的cron表达式，执行默认逻辑");
+      console.log("🔍 调试 - 期望的cron表达式:");
+      console.log("  - RSS监控: '*/1 * * * *'");
+      console.log("  - 推送任务: '*/2 * * * *'");
+      console.log("  - 清理任务: '0 * * * *'");
+      console.log("🔍 调试 - 实际收到的cron:", event.cron);
+      console.log("🔍 调试 - 清理后的cron:", cronStr);
+      
+      // 尝试模式匹配
+      if (cronStr.includes("*/1")) {
+        console.log("🔄 基于模式匹配，执行RSS监控任务");
         const rssResult = await rssMonitorTask(env);
         console.log("✅ RSS监控任务完成:", rssResult);
-        break;
-
-      case "*/2 * * * *":
-        // 推送任务：每2分钟执行一次
-        console.log("📤 执行推送任务...");
+      } else if (cronStr.includes("*/2")) {
+        console.log("🔄 基于模式匹配，执行推送任务");
         const pushResult = await pushTask(env);
         console.log("✅ 推送任务完成:", pushResult);
-        break;
-
-      case "0 * * * *":
-        // 清理任务：每60分钟执行一次
-        console.log("🧹 执行清理任务...");
+      } else if (cronStr.startsWith("0 ")) {
+        console.log("🔄 基于模式匹配，执行清理任务");
         const cleanupResult = await cleanupExpiredPushLogs(env);
         console.log("✅ 清理任务完成:", cleanupResult);
-        break;
-
-      default:
-        // 兼容原有逻辑：如果是未知的cron表达式，执行RSS监控和推送任务
-        console.log("📡 执行RSS监控任务...");
+      } else {
+        console.log("📡 无法匹配，执行默认的RSS监控和推送任务...");
         const defaultRssResult = await rssMonitorTask(env);
         console.log("✅ RSS监控任务完成:", defaultRssResult);
 
         console.log("📤 执行推送任务...");
         const defaultPushResult = await pushTask(env);
         console.log("✅ 推送任务完成:", defaultPushResult);
-        break;
+      }
     }
   } catch (error) {
     console.error(`❌ 定时任务执行失败:`, error);
