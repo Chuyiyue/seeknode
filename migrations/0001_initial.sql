@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS push_logs (
   chat_id INTEGER NOT NULL,
   post_id INTEGER NOT NULL,
   sub_id INTEGER NOT NULL,
+  push_text TEXT NOT NULL,
   push_status INTEGER NOT NULL DEFAULT 0,
   error_message TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
