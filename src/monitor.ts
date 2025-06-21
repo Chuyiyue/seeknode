@@ -182,38 +182,65 @@ async function savePostsToDatabase(
   let savedCount = 0;
 
   try {
-    for (const post of posts) {
-      // 检查帖子是否已存在
-      const existing = await db
-        .prepare("SELECT id FROM posts WHERE post_id = ?")
-        .bind(parseInt(post.id))
-        .first();
-
-      if (!existing) {
-        // 插入新帖子
-        await db
-          .prepare(
-            `
-          INSERT INTO posts (post_id, title, content, pub_date, category, creator, is_push)
-          VALUES (?, ?, ?, ?, ?, ?, 0)
-        `
-          )
-          .bind(
-            parseInt(post.id),
-            post.title,
-            post.description,
-            post.pubDate,
-            post.category,
-            post.creator
-          )
-          .run();
-
-        savedCount++;
-        console.log(`保存新帖子: ${post.title} (ID: ${post.id})`);
-      }
+    if (posts.length === 0) {
+      return 0;
     }
+
+    // 步骤1: 批量查询已存在的帖子ID
+    const postIds = posts.map(post => parseInt(post.id));
+    const placeholders = postIds.map(() => '?').join(',');
+    
+    const existingResult = await db
+      .prepare(`SELECT post_id FROM posts WHERE post_id IN (${placeholders})`)
+      .bind(...postIds)
+      .all();
+    
+    const existingIds = new Set(
+      existingResult.results.map((row: any) => row.post_id)
+    );
+
+    // 步骤2: 过滤出需要插入的新帖子
+    const newPosts = posts.filter(post => !existingIds.has(parseInt(post.id)));
+    
+    if (newPosts.length === 0) {
+      console.log("没有新帖子需要保存");
+      return 0;
+    }
+
+    // 步骤3: 准备批量插入的语句
+    const insertStatements = newPosts.map(post => {
+      return db.prepare(`
+        INSERT INTO posts (post_id, title, content, pub_date, category, creator, is_push)
+        VALUES (?, ?, ?, ?, ?, ?, 0)
+      `).bind(
+        parseInt(post.id),
+        post.title,
+        post.description,
+        post.pubDate,
+        post.category,
+        post.creator
+      );
+    });
+
+    // 步骤4: 批量执行插入操作
+    const batchResult = await db.batch(insertStatements);
+    
+    // 统计成功插入的数量
+    savedCount = batchResult.filter(result => result.success).length;
+    
+    console.log(`批量保存完成: ${savedCount}/${newPosts.length} 个新帖子保存成功`);
+    
+    // 记录保存的帖子信息
+    newPosts.slice(0, Math.min(5, newPosts.length)).forEach(post => {
+      console.log(`保存新帖子: ${post.title} (ID: ${post.id})`);
+    });
+    
+    if (newPosts.length > 5) {
+      console.log(`... 还有 ${newPosts.length - 5} 个帖子`);
+    }
+
   } catch (error) {
-    console.error("保存帖子到数据库失败:", error);
+    console.error("批量保存帖子到数据库失败:", error);
   }
 
   return savedCount;
@@ -222,7 +249,7 @@ async function savePostsToDatabase(
 // 从数据库获取待推送的帖子
 async function getUnpushedPosts(
   db: D1Database,
-  limit: number = 50
+  limit: number = 20
 ): Promise<DBPost[]> {
   try {
     const result = await db
@@ -505,6 +532,43 @@ async function pushTask(
   }
 }
 
+// 批量获取所有用户关键词订阅
+async function getAllUserKeywords(db: D1Database): Promise<Map<number, KeywordSub[]>> {
+  try {
+    const result = await db
+      .prepare(`
+        SELECT ks.*, u.chat_id 
+        FROM keywords_sub ks 
+        JOIN users u ON ks.user_id = u.id 
+        WHERE ks.is_active = 1 AND u.is_active = 1
+      `)
+      .all();
+    
+    const userKeywordsMap = new Map<number, KeywordSub[]>();
+    
+    for (const row of result.results as any[]) {
+      const userId = row.user_id;
+      if (!userKeywordsMap.has(userId)) {
+        userKeywordsMap.set(userId, []);
+      }
+      userKeywordsMap.get(userId)!.push({
+        id: row.id,
+        user_id: row.user_id,
+        keywords_count: row.keywords_count,
+        keyword1: row.keyword1,
+        keyword2: row.keyword2,
+        keyword3: row.keyword3,
+        is_active: row.is_active,
+      });
+    }
+    
+    return userKeywordsMap;
+  } catch (error) {
+    console.error("批量获取用户关键词失败:", error);
+    return new Map();
+  }
+}
+
 // 步骤2：为帖子匹配关键词并创建push_logs记录
 async function createPushLogs(
   env: Env,
@@ -514,84 +578,161 @@ async function createPushLogs(
   let createdLogs = 0;
 
   try {
-    // 获取所有活跃用户
-    const users = await getActiveUsers(env.DB);
+    if (posts.length === 0) {
+      return { totalLogs: 0, createdLogs: 0 };
+    }
+
+    // 步骤1: 批量获取所有活跃用户和他们的关键词订阅
+    const [users, userKeywordsMap] = await Promise.all([
+      getActiveUsers(env.DB),
+      getAllUserKeywords(env.DB)
+    ]);
+
+    if (users.length === 0 || userKeywordsMap.size === 0) {
+      console.log("没有活跃用户或关键词订阅");
+      return { totalLogs: 0, createdLogs: 0 };
+    }
+
+    // 步骤2: 收集所有可能的推送记录组合
+    const potentialMatches: Array<{
+      user: User;
+      post: DBPost;
+      keywords: KeywordSub;
+      matchedKeywords: string[];
+      pushText: string;
+    }> = [];
 
     for (const post of posts) {
       for (const user of users) {
-        // 获取用户的关键词订阅
-        const keywordSubs = await getUserKeywords(env.DB, user.id);
-
+        const keywordSubs = userKeywordsMap.get(user.id) || [];
+        
         for (const keywords of keywordSubs) {
           if (matchKeywords(post, keywords)) {
             totalLogs++;
 
-            // 检查是否已经创建过push_logs记录
-            const existing = await env.DB.prepare(
-              "SELECT id FROM push_logs WHERE user_id = ? AND post_id = ? AND sub_id = ?"
-            )
-              .bind(user.id, post.post_id, keywords.id)
-              .first();
+            // 构建匹配的关键词列表
+            const matchedKeywords = [
+              keywords.keyword1,
+              keywords.keyword2,
+              keywords.keyword3,
+            ].filter(Boolean) as string[];
 
-            if (!existing) {
-              // 构建匹配的关键词列表
-              const matchedKeywords = [
-                keywords.keyword1,
-                keywords.keyword2,
-                keywords.keyword3,
-              ].filter(Boolean) as string[];
+            // 构建帖子链接
+            const postUrl = `https://www.nodeseek.com/post-${post.post_id}-1`;
 
-              // 构建帖子链接
-              const postUrl = `https://www.nodeseek.com/post-${post.post_id}-1`;
+            // 去除 post.title 会影响markdown链接的符号
+            const title = post.title
+              .replace(/\[/g, "「")
+              .replace(/\]/g, "」")
+              .replace(/\(/g, "（")
+              .replace(/\)/g, "）");
+            
+            // 构建消息文本
+            const pushText =
+              `🎯 ${matchedKeywords.join(", ")}\n\n` +
+              `[${title}](${postUrl})`;
 
-              // 去除 post.title 会影响markdown链接的符号
-              const title = post.title
-                .replace(/\[/g, "「")
-                .replace(/\]/g, "」")
-                .replace(/\(/g, "（")
-                .replace(/\)/g, "）");
-              // 构建消息文本
-              const pushText =
-                `🎯 ${matchedKeywords.join(", ")}\n\n` +
-                `[${title}](${postUrl})`;
-
-              // 创建新的push_logs记录，包含预构建的消息文本
-              await env.DB.prepare(
-                `
-                INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_text, push_status, error_message)
-                VALUES (?, ?, ?, ?, ?, 0, NULL)
-              `
-              )
-                .bind(
-                  user.id,
-                  user.chat_id,
-                  post.post_id,
-                  keywords.id,
-                  pushText
-                )
-                .run();
-
-              createdLogs++;
-              console.log(
-                `📝 为用户 ${user.chat_id} 创建帖子 ${post.post_id} 的推送记录`
-              );
-            }
+            potentialMatches.push({
+              user,
+              post,
+              keywords,
+              matchedKeywords,
+              pushText
+            });
 
             // 每个用户对每个帖子只创建一个push_logs记录，即使匹配多个关键词
             break;
           }
         }
       }
-
-      // 标记帖子为已匹配完成
-      await markPostAsPushed(env.DB, post.post_id);
-      console.log(`✅ 标记帖子 ${post.post_id} 为已匹配完成`);
     }
+
+    if (potentialMatches.length === 0) {
+      // 仍需标记帖子为已推送
+      await batchMarkPostsAsPushed(env.DB, posts.map(p => p.post_id));
+      return { totalLogs: 0, createdLogs: 0 };
+    }
+
+    // 步骤3: 批量检查已存在的推送记录
+    const existingChecks = potentialMatches.map(match => 
+      `(${match.user.id}, ${match.post.post_id}, ${match.keywords.id})`
+    ).join(',');
+
+    const existingResult = await env.DB.prepare(`
+      SELECT user_id, post_id, sub_id 
+      FROM push_logs 
+      WHERE (user_id, post_id, sub_id) IN (${existingChecks})
+    `).all();
+
+    // 创建已存在记录的Set，用于快速查找
+    const existingSet = new Set(
+      existingResult.results.map((row: any) => 
+        `${row.user_id}_${row.post_id}_${row.sub_id}`
+      )
+    );
+
+    // 步骤4: 过滤出需要插入的新记录
+    const newMatches = potentialMatches.filter(match => 
+      !existingSet.has(`${match.user.id}_${match.post.post_id}_${match.keywords.id}`)
+    );
+
+    if (newMatches.length === 0) {
+      console.log("所有匹配记录都已存在，无需创建新的推送记录");
+    } else {
+      // 步骤5: 批量插入新的推送记录
+      const insertStatements = newMatches.map(match =>
+        env.DB.prepare(`
+          INSERT INTO push_logs (user_id, chat_id, post_id, sub_id, push_text, push_status, error_message)
+          VALUES (?, ?, ?, ?, ?, 0, NULL)
+        `).bind(
+          match.user.id,
+          match.user.chat_id,
+          match.post.post_id,
+          match.keywords.id,
+          match.pushText
+        )
+      );
+
+      const batchResult = await env.DB.batch(insertStatements);
+      createdLogs = batchResult.filter(result => result.success).length;
+
+      console.log(`批量创建推送记录完成: ${createdLogs}/${newMatches.length} 条记录创建成功`);
+      
+      // 记录前几个创建的推送记录
+      newMatches.slice(0, Math.min(3, newMatches.length)).forEach(match => {
+        console.log(`📝 为用户 ${match.user.chat_id} 创建帖子 ${match.post.post_id} 的推送记录`);
+      });
+      
+      if (newMatches.length > 3) {
+        console.log(`... 还有 ${newMatches.length - 3} 个推送记录`);
+      }
+    }
+
+    // 步骤6: 批量标记帖子为已推送
+    await batchMarkPostsAsPushed(env.DB, posts.map(p => p.post_id));
+
   } catch (error) {
-    console.error("创建推送记录失败:", error);
+    console.error("批量创建推送记录失败:", error);
   }
 
   return { totalLogs, createdLogs };
+}
+
+// 批量标记帖子为已推送
+async function batchMarkPostsAsPushed(db: D1Database, postIds: number[]): Promise<void> {
+  try {
+    if (postIds.length === 0) return;
+    
+    const placeholders = postIds.map(() => '?').join(',');
+    await db
+      .prepare(`UPDATE posts SET is_push = 1 WHERE post_id IN (${placeholders})`)
+      .bind(...postIds)
+      .run();
+    
+    console.log(`✅ 批量标记 ${postIds.length} 个帖子为已匹配完成`);
+  } catch (error) {
+    console.error("批量标记帖子为已推送失败:", error);
+  }
 }
 
 // 更新用户状态为非活跃
